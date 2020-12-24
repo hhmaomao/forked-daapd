@@ -13,6 +13,9 @@
                     <i class="mdi mdi-magnify"></i>
                   </span>
                 </p>
+                <p class="help has-text-centered">Tip: you can search by a smart playlist query language <a href="https://github.com/ejurgensen/forked-daapd/blob/master/README_SMARTPL.md" target="_blank">expression</a> if you prefix it
+                  with <code>query:</code>.
+                </p>
               </div>
             </form>
             <div class="tags" style="margin-top: 16px;">
@@ -23,147 +26,167 @@
       </div>
     </section>
 
-    <tabs-search></tabs-search>
+    <tabs-search :query="search_query"></tabs-search>
 
     <!-- Tracks -->
-    <content-with-heading v-if="show_tracks">
+    <content-with-heading v-if="show_tracks && tracks.total">
       <template slot="heading-left">
         <p class="title is-4">Tracks</p>
       </template>
       <template slot="content">
-        <list-item-track v-for="track in tracks.items" :key="track.id" :track="track" @click="play_track(track)">
-          <template slot="actions">
-            <a @click="open_track_dialog(track)">
-              <span class="icon has-text-dark"><i class="mdi mdi-dots-vertical mdi-18px"></i></span>
-            </a>
-          </template>
-        </list-item-track>
-        <modal-dialog-track :show="show_track_details_modal" :track="selected_track" @close="show_track_details_modal = false" />
+        <list-tracks :tracks="tracks.items"></list-tracks>
       </template>
       <template slot="footer">
         <nav v-if="show_all_tracks_button" class="level">
           <p class="level-item">
-            <a class="button is-light is-small is-rounded" v-on:click="open_search_tracks">Show all {{ tracks.total }} tracks</a>
+            <a class="button is-light is-small is-rounded" v-on:click="open_search_tracks">Show all {{ tracks.total.toLocaleString() }} tracks</a>
           </p>
         </nav>
-        <p v-if="!tracks.total">No results</p>
       </template>
     </content-with-heading>
+    <content-text v-if="show_tracks && !tracks.total" class="mt-6">
+      <template slot="content">
+        <p><i>No tracks found</i></p>
+      </template>
+    </content-text>
 
     <!-- Artists -->
-    <content-with-heading v-if="show_artists">
+    <content-with-heading v-if="show_artists && artists.total">
       <template slot="heading-left">
         <p class="title is-4">Artists</p>
       </template>
       <template slot="content">
-        <list-item-artist v-for="artist in artists.items" :key="artist.id" :artist="artist" @click="open_artist(artist)">
-          <template slot="actions">
-            <a @click="open_artist_dialog(artist)">
-              <span class="icon has-text-dark"><i class="mdi mdi-dots-vertical mdi-18px"></i></span>
-            </a>
-          </template>
-        </list-item-artist>
-        <modal-dialog-artist :show="show_artist_details_modal" :artist="selected_artist" @close="show_artist_details_modal = false" />
+        <list-artists :artists="artists.items"></list-artists>
       </template>
       <template slot="footer">
         <nav v-if="show_all_artists_button" class="level">
           <p class="level-item">
-            <a class="button is-light is-small is-rounded" v-on:click="open_search_artists">Show all {{ artists.total }} artists</a>
+            <a class="button is-light is-small is-rounded" v-on:click="open_search_artists">Show all {{ artists.total.toLocaleString() }} artists</a>
           </p>
         </nav>
-        <p v-if="!artists.total">No results</p>
       </template>
     </content-with-heading>
+    <content-text v-if="show_artists && !artists.total">
+      <template slot="content">
+        <p><i>No artists found</i></p>
+      </template>
+    </content-text>
 
     <!-- Albums -->
-    <content-with-heading v-if="show_albums">
+    <content-with-heading v-if="show_albums && albums.total">
       <template slot="heading-left">
         <p class="title is-4">Albums</p>
       </template>
       <template slot="content">
-        <list-item-album v-for="album in albums.items" :key="album.id" :album="album" @click="open_album(album)">
-          <template slot="actions">
-            <a @click="open_album_dialog(album)">
-              <span class="icon has-text-dark"><i class="mdi mdi-dots-vertical mdi-18px"></i></span>
-            </a>
-          </template>
-        </list-item-album>
-        <modal-dialog-album :show="show_album_details_modal" :album="selected_album" @close="show_album_details_modal = false" />
+        <list-albums :albums="albums.items"></list-albums>
       </template>
       <template slot="footer">
         <nav v-if="show_all_albums_button" class="level">
           <p class="level-item">
-            <a class="button is-light is-small is-rounded" v-on:click="open_search_albums">Show all {{ albums.total }} albums</a>
+            <a class="button is-light is-small is-rounded" v-on:click="open_search_albums">Show all {{ albums.total.toLocaleString() }} albums</a>
           </p>
         </nav>
-        <p v-if="!albums.total">No results</p>
       </template>
     </content-with-heading>
+    <content-text v-if="show_albums && !albums.total">
+      <template slot="content">
+        <p><i>No albums found</i></p>
+      </template>
+    </content-text>
 
     <!-- Playlists -->
-    <content-with-heading v-if="show_playlists">
+    <content-with-heading v-if="show_playlists && playlists.total">
       <template slot="heading-left">
         <p class="title is-4">Playlists</p>
       </template>
       <template slot="content">
-        <list-item-playlist v-for="playlist in playlists.items" :key="playlist.id" :playlist="playlist" @click="open_playlist(playlist)">
-          <template slot="actions">
-            <a @click="open_playlist_dialog(playlist)">
-              <span class="icon has-text-dark"><i class="mdi mdi-dots-vertical mdi-18px"></i></span>
-            </a>
-          </template>
-        </list-item-playlist>
-        <modal-dialog-playlist :show="show_playlist_details_modal" :playlist="selected_playlist" @close="show_playlist_details_modal = false" />
+        <list-playlists :playlists="playlists.items"></list-playlists>
       </template>
       <template slot="footer">
         <nav v-if="show_all_playlists_button" class="level">
           <p class="level-item">
-            <a class="button is-light is-small is-rounded" v-on:click="open_search_playlists">Show all {{ playlists.total }} playlists</a>
+            <a class="button is-light is-small is-rounded" v-on:click="open_search_playlists">Show all {{ playlists.total.toLocaleString() }} playlists</a>
           </p>
         </nav>
-        <p v-if="!playlists.total">No results</p>
       </template>
     </content-with-heading>
+    <content-text v-if="show_playlists && !playlists.total">
+      <template slot="content">
+        <p><i>No playlists found</i></p>
+      </template>
+    </content-text>
+
+    <!-- Podcasts -->
+    <content-with-heading v-if="show_podcasts && podcasts.total">
+      <template slot="heading-left">
+        <p class="title is-4">Podcasts</p>
+      </template>
+      <template slot="content">
+        <list-albums :albums="podcasts.items"></list-albums>
+      </template>
+      <template slot="footer">
+        <nav v-if="show_all_podcasts_button" class="level">
+          <p class="level-item">
+            <a class="button is-light is-small is-rounded" v-on:click="open_search_podcasts">Show all {{ podcasts.total.toLocaleString() }} podcasts</a>
+          </p>
+        </nav>
+      </template>
+    </content-with-heading>
+    <content-text v-if="show_podcasts && !podcasts.total">
+      <template slot="content">
+        <p><i>No podcasts found</i></p>
+      </template>
+    </content-text>
+
+    <!-- Audiobooks -->
+    <content-with-heading v-if="show_audiobooks && audiobooks.total">
+      <template slot="heading-left">
+        <p class="title is-4">Audiobooks</p>
+      </template>
+      <template slot="content">
+        <list-albums :albums="audiobooks.items"></list-albums>
+      </template>
+      <template slot="footer">
+        <nav v-if="show_all_audiobooks_button" class="level">
+          <p class="level-item">
+            <a class="button is-light is-small is-rounded" v-on:click="open_search_audiobooks">Show all {{ audiobooks.total.toLocaleString() }} audiobooks</a>
+          </p>
+        </nav>
+      </template>
+    </content-with-heading>
+    <content-text v-if="show_audiobooks && !audiobooks.total">
+      <template slot="content">
+        <p><i>No audiobooks found</i></p>
+      </template>
+    </content-text>
   </div>
 </template>
 
 <script>
 import ContentWithHeading from '@/templates/ContentWithHeading'
+import ContentText from '@/templates/ContentText'
 import TabsSearch from '@/components/TabsSearch'
-import ListItemTrack from '@/components/ListItemTrack'
-import ListItemArtist from '@/components/ListItemArtist'
-import ListItemAlbum from '@/components/ListItemAlbum'
-import ListItemPlaylist from '@/components/ListItemPlaylist'
-import ModalDialogTrack from '@/components/ModalDialogTrack'
-import ModalDialogAlbum from '@/components/ModalDialogAlbum'
-import ModalDialogArtist from '@/components/ModalDialogArtist'
-import ModalDialogPlaylist from '@/components/ModalDialogPlaylist'
+import ListTracks from '@/components/ListTracks'
+import ListArtists from '@/components/ListArtists'
+import ListAlbums from '@/components/ListAlbums'
+import ListPlaylists from '@/components/ListPlaylists'
 import webapi from '@/webapi'
 import * as types from '@/store/mutation_types'
 
 export default {
   name: 'PageSearch',
-  components: { ContentWithHeading, TabsSearch, ListItemTrack, ListItemArtist, ListItemAlbum, ListItemPlaylist, ModalDialogTrack, ModalDialogAlbum, ModalDialogArtist, ModalDialogPlaylist },
+  components: { ContentWithHeading, ContentText, TabsSearch, ListTracks, ListArtists, ListAlbums, ListPlaylists },
 
   data () {
     return {
       search_query: '',
+
       tracks: { items: [], total: 0 },
       artists: { items: [], total: 0 },
       albums: { items: [], total: 0 },
       playlists: { items: [], total: 0 },
-
-      show_track_details_modal: false,
-      selected_track: {},
-
-      show_album_details_modal: false,
-      selected_album: {},
-
-      show_artist_details_modal: false,
-      selected_artist: {},
-
-      show_playlist_details_modal: false,
-      selected_playlist: {}
+      audiobooks: { items: [], total: 0 },
+      podcasts: { items: [], total: 0 }
     }
   },
 
@@ -198,6 +221,24 @@ export default {
     },
     show_all_playlists_button () {
       return this.playlists.total > this.playlists.items.length
+    },
+
+    show_audiobooks () {
+      return this.$route.query.type && this.$route.query.type.includes('audiobook')
+    },
+    show_all_audiobooks_button () {
+      return this.audiobooks.total > this.audiobooks.items.length
+    },
+
+    show_podcasts () {
+      return this.$route.query.type && this.$route.query.type.includes('podcast')
+    },
+    show_all_podcasts_button () {
+      return this.podcasts.total > this.podcasts.items.length
+    },
+
+    is_visible_artwork () {
+      return this.$store.getters.settings_option('webinterface', 'show_cover_artwork_in_album_lists').value
     }
   },
 
@@ -209,15 +250,32 @@ export default {
         return
       }
 
-      var searchParams = {
-        'type': route.query.type,
-        'query': route.query.query,
-        'media_kind': 'music'
+      this.search_query = route.query.query
+      this.searchMusic(route.query)
+      this.searchAudiobooks(route.query)
+      this.searchPodcasts(route.query)
+      this.$store.commit(types.ADD_RECENT_SEARCH, route.query.query)
+    },
+
+    searchMusic: function (query) {
+      if (query.type.indexOf('track') < 0 && query.type.indexOf('artist') < 0 && query.type.indexOf('album') < 0 && query.type.indexOf('playlist') < 0) {
+        return
       }
 
-      if (route.query.limit) {
-        searchParams.limit = route.query.limit
-        searchParams.offset = route.query.offset
+      var searchParams = {
+        type: query.type,
+        media_kind: 'music'
+      }
+
+      if (query.query.startsWith('query:')) {
+        searchParams.expression = query.query.replace(/^query:/, '').trim()
+      } else {
+        searchParams.query = query.query
+      }
+
+      if (query.limit) {
+        searchParams.limit = query.limit
+        searchParams.offset = query.offset
       }
 
       webapi.search(searchParams).then(({ data }) => {
@@ -225,8 +283,58 @@ export default {
         this.artists = data.artists ? data.artists : { items: [], total: 0 }
         this.albums = data.albums ? data.albums : { items: [], total: 0 }
         this.playlists = data.playlists ? data.playlists : { items: [], total: 0 }
+      })
+    },
 
-        this.$store.commit(types.ADD_RECENT_SEARCH, searchParams.query)
+    searchAudiobooks: function (query) {
+      if (query.type.indexOf('audiobook') < 0) {
+        return
+      }
+
+      var searchParams = {
+        type: 'album',
+        media_kind: 'audiobook'
+      }
+
+      if (query.query.startsWith('query:')) {
+        searchParams.expression = query.query.replace(/^query:/, '').trim()
+      } else {
+        searchParams.expression = '((album includes "' + query.query + '" or artist includes "' + query.query + '") and media_kind is audiobook)'
+      }
+
+      if (query.limit) {
+        searchParams.limit = query.limit
+        searchParams.offset = query.offset
+      }
+
+      webapi.search(searchParams).then(({ data }) => {
+        this.audiobooks = data.albums ? data.albums : { items: [], total: 0 }
+      })
+    },
+
+    searchPodcasts: function (query) {
+      if (query.type.indexOf('podcast') < 0) {
+        return
+      }
+
+      var searchParams = {
+        type: 'album',
+        media_kind: 'podcast'
+      }
+
+      if (query.query.startsWith('query:')) {
+        searchParams.expression = query.query.replace(/^query:/, '').trim()
+      } else {
+        searchParams.expression = '((album includes "' + query.query + '" or artist includes "' + query.query + '") and media_kind is podcast)'
+      }
+
+      if (query.limit) {
+        searchParams.limit = query.limit
+        searchParams.offset = query.offset
+      }
+
+      webapi.search(searchParams).then(({ data }) => {
+        this.podcasts = data.albums ? data.albums : { items: [], total: 0 }
       })
     },
 
@@ -235,9 +343,10 @@ export default {
         return
       }
 
-      this.$router.push({ path: '/search/library',
+      this.$router.push({
+        path: '/search/library',
         query: {
-          type: 'track,artist,album,playlist',
+          type: 'track,artist,album,playlist,audiobook,podcast',
           query: this.search_query,
           limit: 3,
           offset: 0
@@ -247,7 +356,8 @@ export default {
     },
 
     open_search_tracks: function () {
-      this.$router.push({ path: '/search/library',
+      this.$router.push({
+        path: '/search/library',
         query: {
           type: 'track',
           query: this.$route.query.query
@@ -256,7 +366,8 @@ export default {
     },
 
     open_search_artists: function () {
-      this.$router.push({ path: '/search/library',
+      this.$router.push({
+        path: '/search/library',
         query: {
           type: 'artist',
           query: this.$route.query.query
@@ -265,7 +376,8 @@ export default {
     },
 
     open_search_albums: function () {
-      this.$router.push({ path: '/search/library',
+      this.$router.push({
+        path: '/search/library',
         query: {
           type: 'album',
           query: this.$route.query.query
@@ -274,7 +386,8 @@ export default {
     },
 
     open_search_playlists: function () {
-      this.$router.push({ path: '/search/library',
+      this.$router.push({
+        path: '/search/library',
         query: {
           type: 'playlist',
           query: this.$route.query.query
@@ -282,45 +395,29 @@ export default {
       })
     },
 
-    play_track: function (track) {
-      webapi.player_play_uri(track.uri, false)
+    open_search_audiobooks: function () {
+      this.$router.push({
+        path: '/search/library',
+        query: {
+          type: 'audiobook',
+          query: this.$route.query.query
+        }
+      })
     },
 
-    open_artist: function (artist) {
-      this.$router.push({ path: '/music/artists/' + artist.id })
-    },
-
-    open_album: function (album) {
-      this.$router.push({ path: '/music/albums/' + album.id })
-    },
-
-    open_playlist: function (playlist) {
-      this.$router.push({ path: '/playlists/' + playlist.id + '/tracks' })
+    open_search_podcasts: function () {
+      this.$router.push({
+        path: '/search/library',
+        query: {
+          type: 'podcast',
+          query: this.$route.query.query
+        }
+      })
     },
 
     open_recent_search: function (query) {
       this.search_query = query
       this.new_search()
-    },
-
-    open_track_dialog: function (track) {
-      this.selected_track = track
-      this.show_track_details_modal = true
-    },
-
-    open_album_dialog: function (album) {
-      this.selected_album = album
-      this.show_album_details_modal = true
-    },
-
-    open_artist_dialog: function (artist) {
-      this.selected_artist = artist
-      this.show_artist_details_modal = true
-    },
-
-    open_playlist_dialog: function (playlist) {
-      this.selected_playlist = playlist
-      this.show_playlist_details_modal = true
     }
   },
 

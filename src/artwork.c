@@ -26,6 +26,7 @@
 #include <stdbool.h>
 #include <unistd.h>
 #include <string.h>
+#include <strings.h>
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <fcntl.h>
@@ -59,8 +60,7 @@
  *
  * An artwork source handler must return one of the following:
  *
- *   ART_FMT_JPEG (positive)  Found a jpeg
- *   ART_FMT_PNG  (positive)  Found a png
+ *   ART_FMT_XXXX (positive)  An image, see possible formats in artwork.h
  *   ART_E_NONE (zero)        No artwork found
  *   ART_E_ERROR (negative)   An error occurred while searching for artwork
  *   ART_E_ABORT (negative)   Caller should abort artwork search (may be returned by cache)
@@ -78,7 +78,14 @@ enum artwork_cache
   NEVER = 0,       // No caching of any results
   ON_SUCCESS = 1,  // Cache if artwork found
   ON_FAILURE = 2,  // Cache if artwork not found (so we don't keep asking)
-  STASH = 4,  // Only cache "short term": Cache holds just one image, useful for streams
+};
+
+// Input data to handlers, requested width, height and format. Can be set to
+// zero then source is returned.
+struct artwork_req_params {
+  int max_w;
+  int max_h;
+  int format;
 };
 
 /* This struct contains the data available to the handler, as well as a char
@@ -93,9 +100,9 @@ struct artwork_ctx {
   // Handler should output artwork data to this evbuffer
   struct evbuffer *evbuf;
 
-  // Input data to handler, requested width and height
-  int max_w;
-  int max_h;
+  // Requested size and format
+  struct artwork_req_params req_params;
+
   // Input data to handler, did user configure to look for individual artwork
   int individual;
 
@@ -103,6 +110,7 @@ struct artwork_ctx {
   struct db_media_file_info *dbmfi;
   int id;
   uint32_t data_kind;
+  uint32_t media_kind;
   // Input data for group handlers
   int64_t persistentid;
 
@@ -121,8 +129,11 @@ struct artwork_source {
   // The handler
   int (*handler)(struct artwork_ctx *ctx);
 
-  // What data_kinds the handler can work with, combined with (1 << A) | (1 << B)
-  int data_kinds;
+  // data_kinds the handler can work with, combined with (1 << A) | (1 << B)
+  uint32_t data_kinds;
+
+  // media_kinds the handler supports, combined with A | B
+  uint32_t media_kinds;
 
   // When should results from the source be cached?
   enum artwork_cache cache;
@@ -189,7 +200,7 @@ static int source_group_dir_get(struct artwork_ctx *ctx);
 static int source_item_cache_get(struct artwork_ctx *ctx);
 static int source_item_embedded_get(struct artwork_ctx *ctx);
 static int source_item_own_get(struct artwork_ctx *ctx);
-static int source_item_stream_get(struct artwork_ctx *ctx);
+static int source_item_artwork_url_get(struct artwork_ctx *ctx);
 static int source_item_pipe_get(struct artwork_ctx *ctx);
 static int source_item_spotifywebapi_track_get(struct artwork_ctx *ctx);
 static int source_item_ownpl_get(struct artwork_ctx *ctx);
@@ -231,73 +242,89 @@ static struct artwork_source artwork_item_source[] =
       .name = "cache",
       .handler = source_item_cache_get,
       .data_kinds = (1 << DATA_KIND_FILE) | (1 << DATA_KIND_SPOTIFY),
+      .media_kinds = MEDIA_KIND_ALL,
       .cache = ON_FAILURE,
     },
     {
       .name = "embedded",
       .handler = source_item_embedded_get,
       .data_kinds = (1 << DATA_KIND_FILE) | (1 << DATA_KIND_HTTP),
+      .media_kinds = MEDIA_KIND_ALL,
       .cache = ON_SUCCESS | ON_FAILURE,
     },
     {
       .name = "own",
       .handler = source_item_own_get,
       .data_kinds = (1 << DATA_KIND_FILE),
+      .media_kinds = MEDIA_KIND_ALL,
       .cache = ON_SUCCESS | ON_FAILURE,
     },
     {
       .name = "stream",
-      .handler = source_item_stream_get,
+      .handler = source_item_artwork_url_get,
       .data_kinds = (1 << DATA_KIND_HTTP),
-      .cache = STASH,
+      .media_kinds = MEDIA_KIND_MUSIC,
+      .cache = NEVER,
     },
     {
       .name = "pipe",
       .handler = source_item_pipe_get,
       .data_kinds = (1 << DATA_KIND_PIPE),
+      .media_kinds = MEDIA_KIND_ALL,
       .cache = NEVER,
     },
     {
       .name = "Spotify track web api",
       .handler = source_item_spotifywebapi_track_get,
       .data_kinds = (1 << DATA_KIND_SPOTIFY),
+      .media_kinds = MEDIA_KIND_ALL,
       .cache = ON_SUCCESS | ON_FAILURE,
     },
     {
+      // Note that even though caching is set for this handler, it will in most
+      // cases not happen because source_item_artwork_url_get() comes before
+      // and has NEVER. This is intentional because this handler is also a
+      // backup for when we don't get anything from the stream.
       .name = "playlist own",
       .handler = source_item_ownpl_get,
       .data_kinds = (1 << DATA_KIND_HTTP),
+      .media_kinds = MEDIA_KIND_ALL,
       .cache = ON_SUCCESS | ON_FAILURE,
     },
     {
       .name = "Spotify search web api (files)",
       .handler = source_item_spotifywebapi_search_get,
       .data_kinds = (1 << DATA_KIND_FILE),
+      .media_kinds = MEDIA_KIND_MUSIC,
       .cache = ON_SUCCESS | ON_FAILURE,
     },
     {
       .name = "Spotify search web api (streams)",
       .handler = source_item_spotifywebapi_search_get,
       .data_kinds = (1 << DATA_KIND_HTTP) | (1 << DATA_KIND_PIPE),
-      .cache = STASH,
+      .media_kinds = MEDIA_KIND_MUSIC,
+      .cache = NEVER,
     },
     {
       .name = "Discogs (files)",
       .handler = source_item_discogs_get,
       .data_kinds = (1 << DATA_KIND_FILE),
+      .media_kinds = MEDIA_KIND_MUSIC,
       .cache = ON_SUCCESS | ON_FAILURE,
     },
     {
       .name = "Discogs (streams)",
       .handler = source_item_discogs_get,
       .data_kinds = (1 << DATA_KIND_HTTP) | (1 << DATA_KIND_PIPE),
-      .cache = STASH,
+      .media_kinds = MEDIA_KIND_MUSIC,
+      .cache = NEVER,
     },
     {
       // The Cover Art Archive seems rather slow, so low priority
       .name = "Cover Art Archive (files)",
       .handler = source_item_coverartarchive_get,
       .data_kinds = (1 << DATA_KIND_FILE),
+      .media_kinds = MEDIA_KIND_MUSIC,
       .cache = ON_SUCCESS | ON_FAILURE,
     },
     {
@@ -305,7 +332,8 @@ static struct artwork_source artwork_item_source[] =
       .name = "Cover Art Archive (streams)",
       .handler = source_item_coverartarchive_get,
       .data_kinds = (1 << DATA_KIND_HTTP) | (1 << DATA_KIND_PIPE),
-      .cache = STASH,
+      .media_kinds = MEDIA_KIND_MUSIC,
+      .cache = NEVER,
     },
     {
       .name = NULL,
@@ -382,7 +410,7 @@ static struct online_source musicbrainz_source =
  *
  * @out evbuf     Image data
  * @in  url       URL for the image
- * @return        ART_FMT_* on success, ART_E_ERROR otherwise
+ * @return        ART_FMT_* on success, ART_E_NONE on 404, ART_E_ERROR otherwise
  */
 static int
 artwork_read_byurl(struct evbuffer *evbuf, const char *url)
@@ -391,17 +419,19 @@ artwork_read_byurl(struct evbuffer *evbuf, const char *url)
   struct keyval *kv;
   const char *content_type;
   size_t len;
+  int format;
   int ret;
 
   DPRINTF(E_SPAM, L_ART, "Trying internet artwork in %s\n", url);
 
+  format = ART_E_ERROR;
   CHECK_NULL(L_ART, kv = keyval_alloc());
 
   len = strlen(url);
   if ((len < 14) || (len > PATH_MAX)) // Can't be shorter than http://a/1.jpg
     {
       DPRINTF(E_LOG, L_ART, "Artwork request URL is invalid (len=%zu): '%s'\n", len, url);
-      goto error;
+      goto out;
     }
 
   memset(&client, 0, sizeof(struct http_client_ctx));
@@ -413,34 +443,33 @@ artwork_read_byurl(struct evbuffer *evbuf, const char *url)
   if (ret < 0)
     {
       DPRINTF(E_LOG, L_ART, "Request to '%s' failed with return value %d\n", url, ret);
-      goto error;
+      goto out;
     }
 
-  if (client.response_code != HTTP_OK)
+  if (client.response_code == HTTP_NOTFOUND)
+    {
+      DPRINTF(E_INFO, L_ART, "No artwork found at '%s' (code %d)\n", url, client.response_code);
+      format = ART_E_NONE;
+      goto out;
+    }
+  else if (client.response_code != HTTP_OK)
     {
       DPRINTF(E_LOG, L_ART, "Request to '%s' failed with code %d\n", url, client.response_code);
-      goto error;
+      goto out;
     }
 
   content_type = keyval_get(kv, "Content-Type");
-  if (content_type && (strcmp(content_type, "image/jpeg") == 0))
-    ret = ART_FMT_JPEG;
-  else if (content_type && (strcmp(content_type, "image/png") == 0))
-    ret = ART_FMT_PNG;
+  if (content_type && (strcasecmp(content_type, "image/jpeg") == 0 || strcasecmp(content_type, "image/jpg") == 0))
+    format = ART_FMT_JPEG;
+  else if (content_type && strcasecmp(content_type, "image/png") == 0)
+    format = ART_FMT_PNG;
   else
-    {
-      DPRINTF(E_LOG, L_ART, "Artwork from '%s' has no known content type\n", url);
-      goto error;
-    }
+    DPRINTF(E_LOG, L_ART, "Artwork from '%s' has no known content type\n", url);
 
+ out:
   keyval_clear(kv);
   free(kv);
-  return ret;
-
- error:
-  keyval_clear(kv);
-  free(kv);
-  return ART_E_ERROR;
+  return format;
 }
 
 /* Reads an artwork file from the filesystem straight into an evbuf
@@ -494,143 +523,185 @@ artwork_read_bypath(struct evbuffer *evbuf, char *path)
   return -1;
 }
 
-/* Will the source image fit inside requested size. If not, what size should it
- * be rescaled to to maintain aspect ratio.
+/* Calculates new size if the source image will not fit inside the requested
+ * size. If the original fits then dst_w/h will equal src_w/h.
  *
- * @out target_w  Rescaled width
- * @out target_h  Rescaled height
- * @in  width     Actual width
- * @in  height    Actual height
- * @in  max_w     Requested width
- * @in  max_h     Requested height
- * @return        -1 no rescaling needed, otherwise 0
+ * @out dst_w  Rescaled width
+ * @out dst_h  Rescaled height
+ * @in  src_w  Actual width
+ * @in  src_h  Actual height
+ * @in  max_w  Requested width
+ * @in  max_h  Requested height
  */
-static int
-rescale_calculate(int *target_w, int *target_h, int width, int height, int max_w, int max_h)
+static void
+size_calculate(int *dst_w, int *dst_h, int src_w, int src_h, int max_w, int max_h)
 {
-  DPRINTF(E_DBG, L_ART, "Original image dimensions: w %d h %d\n", width, height);
+  DPRINTF(E_DBG, L_ART, "Original image dimensions: w %d h %d\n", src_w, src_h);
 
-  *target_w = width;
-  *target_h = height;
+  *dst_w = src_w;
+  *dst_h = src_h;
 
-  if ((width == 0) || (height == 0))                   /* Unknown source size, can't rescale */
-    return -1;
+  // No valid target dimensions, use original
+  if ((max_w <= 0) || (max_h <= 0))
+    return;
 
-  if ((max_w <= 0) || (max_h <= 0))                    /* No valid target dimensions, use original */
-    return -1;
+  // Smaller than target, use original
+  if ((src_w <= max_w) && (src_h <= max_h))
+    return;
 
-  if ((width <= max_w) && (height <= max_h))           /* Smaller than target */
-    return -1;
-
-  if (width * max_h > height * max_w)                  /* Wider aspect ratio than target */
+  // Wider aspect ratio than target
+  if (src_w * max_h > src_h * max_w)
     {
-      *target_w = max_w;
-      *target_h = (double)max_w * ((double)height / (double)width);
+      *dst_w = max_w;
+      *dst_h = (double)max_w * ((double)src_h / (double)src_w);
     }
-  else                                                 /* Taller or equal aspect ratio */
+  // Taller or equal aspect ratio
+  else
     {
-      *target_w = (double)max_h * ((double)width / (double)height);
-      *target_h = max_h;
+      *dst_w = (double)max_h * ((double)src_w / (double)src_h);
+      *dst_h = max_h;
     }
 
-  if ((*target_h > max_h) && (max_h > 0))
-    *target_h = max_h;
+  if (*dst_h > max_h)
+    *dst_h = max_h;
 
-  /* PNG prefers even row count */
-  *target_w += *target_w % 2;
+  // PNG prefers even row count
+  *dst_w += *dst_w % 2;
 
-  if ((*target_w > max_w) && (max_w > 0))
-    *target_w = max_w - (max_w % 2);
+  if (*dst_w > max_w)
+    *dst_w = max_w - (max_w % 2);
 
-  DPRINTF(E_DBG, L_ART, "Rescale required, destination width %d height %d\n", *target_w, *target_h);
-
-  return 0;
+  DPRINTF(E_DBG, L_ART, "Rescale required, destination width %d height %d\n", *dst_w, *dst_h);
 }
 
+#ifdef HAVE_LIBEVENT2_OLD
+// This is not how this function is actually defined in libevent 2.1+, but it
+// works as a less optimal stand-in
+int
+evbuffer_add_buffer_reference(struct evbuffer *outbuf, struct evbuffer *inbuf)
+{
+  uint8_t *buf = evbuffer_pullup(inbuf, -1);
+  if (!buf)
+    return -1;
+
+  return evbuffer_add_reference(outbuf, buf, evbuffer_get_length(inbuf), NULL, NULL);
+}
+#endif
+
 /*
- * Either gets the artwork file given in "path" from the file system (rescaled
- * if needed) or rescales the artwork given in "inbuf".
+ * Either gets the artwork file given in "path" (rescaled if needed) or rescales
+ * the artwork given in "inbuf".
  *
  * @out evbuf        Image data (rescaled if needed)
  * @in  path         Path to the artwork file (alternative to inbuf)
- * @in  inbuf        Buffer with the artwork (alternative to path)
- * @in  max_w        Requested width
- * @in  max_h        Requested height
+ * @in  in_buf       Buffer with the artwork (alternative to path)
  * @in  is_embedded  Whether the artwork in file is embedded or raw jpeg/png
+ * @in  data_kind    Used by the transcode module to determine e.g. probe size
+ * @in  req_params   Requested max size/format
  * @return           ART_FMT_* on success, ART_E_ERROR on error
  */
 static int
-artwork_get(struct evbuffer *evbuf, char *path, struct evbuffer *inbuf, int max_w, int max_h, bool is_embedded)
+artwork_get(struct evbuffer *evbuf, char *path, struct evbuffer *in_buf, bool is_embedded, enum data_kind data_kind, struct artwork_req_params req_params)
 {
-  struct decode_ctx *xcode_decode;
-  struct encode_ctx *xcode_encode;
+  struct decode_ctx *xcode_decode = NULL;
+  struct encode_ctx *xcode_encode = NULL;
+  struct evbuffer *xcode_buf = NULL;
   void *frame;
-  int width;
-  int height;
-  int target_w;
-  int target_h;
-  int format_ok;
+  int src_width;
+  int src_height;
+  int src_format;
+  int dst_width;
+  int dst_height;
+  int dst_format;
   int ret;
 
-  DPRINTF(E_SPAM, L_ART, "Getting artwork (max destination width %d height %d)\n", max_w, max_h);
+  DPRINTF(E_SPAM, L_ART, "Getting artwork (max destination width %d height %d)\n", req_params.max_w, req_params.max_h);
 
-  xcode_decode = transcode_decode_setup(XCODE_JPEG, NULL, DATA_KIND_FILE, path, inbuf, 0); // Covers XCODE_PNG too
+  // At this point we don't know if we will need to rescale/reformat, and we
+  // won't know until probing the source (which the transcode module does). The
+  // act of probing uses evbuffer_remove(), thus consuming some of the buffer.
+  // So that means that if rescaling/reformating turns out not to be required,
+  // we could no longer just add in_buf to the evbuf buffer and return to the
+  // caller. The below makes that possible (with no copying).
+  if (in_buf)
+    {
+      CHECK_NULL(L_ART, xcode_buf = evbuffer_new());
+      ret = evbuffer_add_buffer_reference(xcode_buf, in_buf);
+      if (ret < 0)
+	{
+	  DPRINTF(E_LOG, L_ART, "Could not copy/ref raw image for rescaling (ret=%d)\n", ret);
+	  ret = ART_E_ERROR;
+	  goto out;
+	}
+    }
+
+  xcode_decode = transcode_decode_setup(XCODE_JPEG, NULL, data_kind, path, xcode_buf, 0); // Covers XCODE_PNG too
   if (!xcode_decode)
     {
       if (path)
 	DPRINTF(E_DBG, L_ART, "No artwork found in '%s'\n", path);
       else
 	DPRINTF(E_DBG, L_ART, "No artwork provided to artwork_get()\n");
-      return ART_E_NONE;
+
+      ret = ART_E_NONE;
+      goto out;
     }
 
+  // Determine source and destination format
   if (transcode_decode_query(xcode_decode, "is_jpeg"))
-    format_ok = ART_FMT_JPEG;
+    src_format = ART_FMT_JPEG;
   else if (transcode_decode_query(xcode_decode, "is_png"))
-    format_ok = ART_FMT_PNG;
+    src_format = ART_FMT_PNG;
   else
     {
-      if (is_embedded)
+      if (path)
 	DPRINTF(E_DBG, L_ART, "File '%s' has no PNG or JPEG artwork\n", path);
-      else if (path)
-	DPRINTF(E_LOG, L_ART, "Artwork file '%s' not a PNG or JPEG file\n", path);
       else
 	DPRINTF(E_LOG, L_ART, "Artwork data provided to artwork_get() is not PNG or JPEG\n");
 
-      goto fail_free_decode;
+      ret = ART_E_ERROR;
+      goto out;
     }
 
-  width = transcode_decode_query(xcode_decode, "width");
-  height = transcode_decode_query(xcode_decode, "height");
+  dst_format = req_params.format ? req_params.format : src_format;
 
-  ret = rescale_calculate(&target_w, &target_h, width, height, max_w, max_h);
-  if (ret < 0)
+  // Determine source and destination size
+  src_width = transcode_decode_query(xcode_decode, "width");
+  src_height = transcode_decode_query(xcode_decode, "height");
+  if (src_width <= 0 || src_height <= 0)
     {
-      if (is_embedded)
-	{
-	  target_w = width;
-	  target_h = height;
-	}
-      else if (path)
-	{
-	  // No rescaling required, just read the raw file into the evbuf
-	  ret = artwork_read_bypath(evbuf, path);
-	  if (ret < 0)
-	    goto fail_free_decode;
-
-	  transcode_decode_cleanup(&xcode_decode);
-	  return format_ok;
-	}
+      if (path)
+	DPRINTF(E_DBG, L_ART, "File '%s' has unknown artwork dimensions\n", path);
       else
-	{
-	  goto fail_free_decode;
-	}
+	DPRINTF(E_LOG, L_ART, "Artwork data provided to artwork_get() has unknown dimensions\n");
+
+      ret = ART_E_ERROR;
+      goto out;
     }
 
-  if (format_ok == ART_FMT_JPEG)
-    xcode_encode = transcode_encode_setup(XCODE_JPEG, NULL, xcode_decode, NULL, target_w, target_h);
+  size_calculate(&dst_width, &dst_height, src_width, src_height, req_params.max_w, req_params.max_h);
+
+  // Fast path. Won't work for embedded, since we need to extract the image from
+  // the file.
+  if (!is_embedded && dst_format == src_format && dst_width == src_width && dst_height == src_height)
+    {
+      if (path)
+	ret = artwork_read_bypath(evbuf, path);
+      else
+        ret = evbuffer_add_buffer(evbuf, in_buf);
+
+      ret = (ret < 0) ? ART_E_ERROR : src_format;
+      goto out;
+    }
+
+  if (dst_format == ART_FMT_JPEG)
+    xcode_encode = transcode_encode_setup(XCODE_JPEG, NULL, xcode_decode, NULL, dst_width, dst_height);
+  else if (dst_format == ART_FMT_PNG)
+    xcode_encode = transcode_encode_setup(XCODE_PNG, NULL, xcode_decode, NULL, dst_width, dst_height);
+  else if (dst_format == ART_FMT_VP8)
+    xcode_encode = transcode_encode_setup(XCODE_VP8, NULL, xcode_decode, NULL, dst_width, dst_height);
   else
-    xcode_encode = transcode_encode_setup(XCODE_PNG, NULL, xcode_decode, NULL, target_w, target_h);
+    xcode_encode = transcode_encode_setup(XCODE_JPEG, NULL, xcode_decode, NULL, dst_width, dst_height);
 
   if (!xcode_encode)
     {
@@ -638,89 +709,37 @@ artwork_get(struct evbuffer *evbuf, char *path, struct evbuffer *inbuf, int max_
 	DPRINTF(E_WARN, L_ART, "Error preparing rescaling of '%s'\n", path);
       else
 	DPRINTF(E_WARN, L_ART, "Error preparing rescaling of artwork data\n");
-      goto fail_free_decode;
+
+      ret = ART_E_ERROR;
+      goto out;
     }
 
   // We don't use transcode() because we just want to process one frame
   ret = transcode_decode(&frame, xcode_decode);
   if (ret < 0)
-    goto fail_free_encode;
+    {
+      ret = ART_E_ERROR;
+      goto out;
+    }
 
   ret = transcode_encode(evbuf, xcode_encode, frame, 1);
-
-  transcode_encode_cleanup(&xcode_encode);
-  transcode_decode_cleanup(&xcode_decode);
-
   if (ret < 0)
     {
       evbuffer_drain(evbuf, evbuffer_get_length(evbuf));
-      return ART_E_ERROR;
+      ret = ART_E_ERROR;
+      goto out;
     }
 
-  return format_ok;
+  ret = dst_format;
 
- fail_free_encode:
+ out:
   transcode_encode_cleanup(&xcode_encode);
- fail_free_decode:
   transcode_decode_cleanup(&xcode_decode);
-  return ART_E_ERROR;
-}
 
-/* Rescales an image in an evbuf (if required)
- *
- * @out artwork   Rescaled image data (or original, if not rescaled)
- * @in  raw       Original image data
- * @in  max_w     Requested max width
- * @in  max_h     Requested max height
- * @return        0 on success, -1 on error
- */
-static int
-artwork_evbuf_rescale(struct evbuffer *artwork, struct evbuffer *raw, int max_w, int max_h)
-{
-  struct evbuffer *refbuf;
-  int ret;
+  if (xcode_buf)
+    evbuffer_free(xcode_buf);
 
-  CHECK_NULL(L_ART, refbuf = evbuffer_new());
-
-  // Make a refbuf of raw for ffmpeg image size probing and possibly rescaling.
-  // We keep raw around in case rescaling is not necessary.
-#ifdef HAVE_LIBEVENT2_OLD
-  uint8_t *buf = evbuffer_pullup(raw, -1);
-  if (!buf)
-    {
-      DPRINTF(E_LOG, L_ART, "Could not pullup raw artwork\n");
-      goto error;
-    }
-
-  ret = evbuffer_add_reference(refbuf, buf, evbuffer_get_length(raw), NULL, NULL);
-#else
-  ret = evbuffer_add_buffer_reference(refbuf, raw);
-#endif
-  if (ret < 0)
-    {
-      DPRINTF(E_LOG, L_ART, "Could not copy/ref raw image for rescaling (ret=%d)\n", ret);
-      goto error;
-    }
-
-  // For non-file input, artwork_get() will also fail if no rescaling is required
-  ret = artwork_get(artwork, NULL, refbuf, max_w, max_h, false);
-  if (ret == ART_E_ERROR)
-    {
-      DPRINTF(E_DBG, L_ART, "No rescaling required\n");
-      ret = evbuffer_add_buffer(artwork, raw);
-      if (ret < 0)
-	{
-	  DPRINTF(E_LOG, L_ART, "Could not add or rescale image to output evbuf (ret=%d)\n", ret);
-	  goto error;
-	}
-    }
-
-  evbuffer_free(refbuf);
-  return 0;
-
- error:
-  evbuffer_free(refbuf);
-  return -1;
+  return ret;
 }
 
 /*
@@ -855,76 +874,69 @@ parent_dir_image_find(char *out_path, size_t len, const char *dir)
 /* Looks for an artwork file in a directory. Will rescale if needed.
  *
  * @out evbuf     Image data
- * @in  dir       Directory to search
- * @in  max_w     Requested width
- * @in  max_h     Requested height
  * @out out_path  Path to the artwork file if found, must be a char[PATH_MAX] buffer
  * @in  len       Max size of "out_path"
+ * @in  dir       Directory to search
+ * @in  req_params Requested max size/format
  * @return        ART_FMT_* on success, ART_E_NONE on nothing found, ART_E_ERROR on error
  */
 static int
-artwork_get_bydir(struct evbuffer *evbuf, char *dir, int max_w, int max_h, char *out_path, size_t len)
+artwork_get_bydir(struct evbuffer *evbuf, char *out_path, size_t len, char *dir, struct artwork_req_params req_params)
 {
   int ret;
 
   ret = dir_image_find(out_path, len, dir);
   if (ret >= 0)
     {
-      return artwork_get(evbuf, out_path, NULL, max_w, max_h, false);
+      return artwork_get(evbuf, out_path, NULL, false, DATA_KIND_FILE, req_params);
     }
 
   ret = parent_dir_image_find(out_path, len, dir);
   if (ret >= 0)
     {
-      return artwork_get(evbuf, out_path, NULL, max_w, max_h, false);
+      return artwork_get(evbuf, out_path, NULL, false, DATA_KIND_FILE, req_params);
     }
 
   return ART_E_NONE;
 }
 
 /* Retrieves artwork from an URL, will rescale if needed. Checks the cache stash
- * before making a request.
+ * before making a request. Stashes result in cache, also if negative.
  *
  * @out artwork   Image data
  * @in  url       URL of the artwork
- * @in  max_w     Requested max width
- * @in  max_h     Requested max height
- * @return        ART_FMT_* on success, ART_E_ERROR on error
+ * @in  req_params Requested max size/format
+ * @return        ART_FMT_* on success, ART_E_NONE or ART_E_ERROR
  */
 static int
-artwork_get_byurl(struct evbuffer *artwork, const char *url, int max_w, int max_h)
+artwork_get_byurl(struct evbuffer *artwork, const char *url, struct artwork_req_params req_params)
 {
   struct evbuffer *raw;
   int format;
   int ret;
 
   CHECK_NULL(L_ART, raw = evbuffer_new());
+  format = ART_E_ERROR;
 
   ret = cache_artwork_read(raw, url, &format);
-  if (ret == 0 && format > 0)
+  if (ret < 0)
     {
-      ret = artwork_evbuf_rescale(artwork, raw, max_w, max_h);
-      if (ret < 0)
-	goto error;
-
-      evbuffer_free(raw);
-      return format;
+      format = artwork_read_byurl(raw, url);
+      cache_artwork_stash(raw, url, format);
     }
 
-  format = artwork_read_byurl(raw, url);
-  if (format < 0)
-    goto error;
+  // If we couldn't read, or we have cached a negative result from the last attempt, we stop now
+  if (format <= 0)
+    goto out;
 
-  ret = artwork_evbuf_rescale(artwork, raw, max_w, max_h);
+  // Takes care of resizing
+  ret = artwork_get(artwork, NULL, raw, false, 0, req_params);
   if (ret < 0)
-    goto error;
+    format = ART_E_ERROR;
 
+ out:
   evbuffer_free(raw);
   return format;
-
- error:
-  evbuffer_free(raw);
-  return ART_E_ERROR;
 }
 
 /* ------------------------- ONLINE SOURCE HANDLING  ----------------------- */
@@ -1142,10 +1154,9 @@ online_source_request_url_make(char *url, size_t url_size, struct online_source 
   return -1;
 }
 
-static char *
-online_source_search_check_last(struct online_source *src, uint32_t hash, int max_w, int max_h)
+static int
+online_source_search_check_last(char **last_artwork_url, struct online_source *src, uint32_t hash, int max_w, int max_h)
 {
-  char *last_artwork_url = NULL;
   bool is_same;
 
   pthread_mutex_lock(&src->search_history.mutex);
@@ -1154,12 +1165,13 @@ online_source_search_check_last(struct online_source *src, uint32_t hash, int ma
             (max_w == src->search_history.last_max_w) &&
             (max_h == src->search_history.last_max_h);
 
+  // Copy this to the caller while we have the lock anyway
   if (is_same)
-    last_artwork_url = safe_strdup(src->search_history.last_artwork_url);
+    *last_artwork_url = safe_strdup(src->search_history.last_artwork_url);
 
   pthread_mutex_unlock(&src->search_history.mutex);
 
-  return last_artwork_url;
+  return is_same ? 0 : -1;
 }
 
 static bool
@@ -1233,9 +1245,11 @@ online_source_search(struct online_source *src, struct artwork_ctx *ctx)
 
   // Be nice to our peer + improve response times by not repeating search requests
   hash = djb_hash(url, strlen(url));
-  artwork_url = online_source_search_check_last(src, hash, ctx->max_w, ctx->max_h);
-  if (artwork_url)
-    return artwork_url;
+  ret = online_source_search_check_last(&artwork_url, src, hash, ctx->req_params.max_w, ctx->req_params.max_h);
+  if (ret == 0)
+    {
+      return artwork_url; // Will be NULL if we are repeating a search that failed
+    }
 
   // If our recent searches have been futile we may give the source a break
   if (online_source_is_failing(src, ctx->id))
@@ -1269,7 +1283,7 @@ online_source_search(struct online_source *src, struct artwork_ctx *ctx)
       goto error;
     }
 
-  ret = online_source_response_parse(&artwork_url, src, client.input_body, ctx->max_w, ctx->max_h);
+  ret = online_source_response_parse(&artwork_url, src, client.input_body, ctx->req_params.max_w, ctx->req_params.max_h);
   if (ret == ONLINE_SOURCE_PARSE_NOT_FOUND)
     DPRINTF(E_DBG, L_ART, "No image tag found in response from source '%s'\n", src->name);
   else if (ret == ONLINE_SOURCE_PARSE_INVALID)
@@ -1302,7 +1316,7 @@ online_source_is_enabled(struct online_source *src)
   enabled = settings_option_getbool(settings_option_get(category, src->setting_name));
 
   if (!enabled)
-    DPRINTF(E_DBG, L_ART, "Source %s is disabled\n", src->name);
+    DPRINTF(E_SPAM, L_ART, "Source %s is disabled\n", src->name);
 
   return enabled;
 }
@@ -1319,7 +1333,7 @@ source_group_cache_get(struct artwork_ctx *ctx)
   int cached;
   int ret;
 
-  ret = cache_artwork_get(CACHE_ARTWORK_GROUP, ctx->persistentid, ctx->max_w, ctx->max_h, &cached, &format, ctx->evbuf);
+  ret = cache_artwork_get(CACHE_ARTWORK_GROUP, ctx->persistentid, ctx->req_params.max_w, ctx->req_params.max_h, &cached, &format, ctx->evbuf);
   if (ret < 0)
     return ART_E_ERROR;
 
@@ -1344,7 +1358,6 @@ source_group_dir_get(struct artwork_ctx *ctx)
   char *dir;
   int ret;
 
-  /* Image is not in the artwork cache. Try directory artwork first */
   memset(&qp, 0, sizeof(struct query_params));
 
   qp.type = Q_GROUP_DIRS;
@@ -1363,7 +1376,7 @@ source_group_dir_get(struct artwork_ctx *ctx)
       if (access(dir, F_OK) < 0)
 	continue;
 
-      ret = artwork_get_bydir(ctx->evbuf, dir, ctx->max_w, ctx->max_h, ctx->path, sizeof(ctx->path));
+      ret = artwork_get_bydir(ctx->evbuf, ctx->path, sizeof(ctx->path), dir, ctx->req_params);
       if (ret > 0)
 	{
 	  db_query_end(&qp);
@@ -1395,7 +1408,7 @@ source_item_cache_get(struct artwork_ctx *ctx)
   if (!ctx->individual)
     return ART_E_NONE;
 
-  ret = cache_artwork_get(CACHE_ARTWORK_INDIVIDUAL, ctx->id, ctx->max_w, ctx->max_h, &cached, &format, ctx->evbuf);
+  ret = cache_artwork_get(CACHE_ARTWORK_INDIVIDUAL, ctx->id, ctx->req_params.max_w, ctx->req_params.max_h, &cached, &format, ctx->evbuf);
   if (ret < 0)
     return ART_E_ERROR;
 
@@ -1413,11 +1426,22 @@ source_item_cache_get(struct artwork_ctx *ctx)
 static int
 source_item_embedded_get(struct artwork_ctx *ctx)
 {
+  int artwork;
+
   DPRINTF(E_SPAM, L_ART, "Trying embedded artwork in %s\n", ctx->dbmfi->path);
+
+  if (safe_atoi32(ctx->dbmfi->artwork, &artwork) < 0)
+    {
+      DPRINTF(E_LOG, L_ART, "Error converting dbmfi artwork to number for '%s'\n", ctx->dbmfi->path);
+      return ART_E_ERROR;
+    }
+
+  if (artwork != ARTWORK_EMBEDDED)
+    return ART_E_NONE;
 
   snprintf(ctx->path, sizeof(ctx->path), "%s", ctx->dbmfi->path);
 
-  return artwork_get(ctx->evbuf, ctx->path, NULL, ctx->max_w, ctx->max_h, true);
+  return artwork_get(ctx->evbuf, ctx->path, NULL, true, ctx->data_kind, ctx->req_params);
 }
 
 /* Looks for basename(in_path).{png,jpg}, so if in_path is /foo/bar.mp3 it
@@ -1471,28 +1495,19 @@ source_item_own_get(struct artwork_ctx *ctx)
 
   snprintf(ctx->path, sizeof(ctx->path), "%s", path);
 
-  return artwork_get(ctx->evbuf, path, NULL, ctx->max_w, ctx->max_h, false);
+  return artwork_get(ctx->evbuf, path, NULL, false, ctx->data_kind, ctx->req_params);
 }
 
 /*
- * Downloads the artwork pointed to by the ICY metadata tag in an internet radio
- * stream (the StreamUrl tag). The path will be converted back to the id, which
- * is given to the player. If the id is currently being played, and there is a
- * valid ICY metadata artwork URL available, it will be returned to this
- * function, which will then use the http client to get the artwork.
+ * Downloads the artwork from the location pointed to by queue_item->artwork_url
  */
 static int
-source_item_stream_get(struct artwork_ctx *ctx)
+source_item_artwork_url_get(struct artwork_ctx *ctx)
 {
   struct db_queue_item *queue_item;
-  char *url;
-  char *ext;
-  int len;
   int ret;
 
-  DPRINTF(E_SPAM, L_ART, "Trying internet stream artwork in %s\n", ctx->dbmfi->path);
-
-  ret = ART_E_NONE;
+  DPRINTF(E_SPAM, L_ART, "Trying artwork url for %s\n", ctx->dbmfi->path);
 
   queue_item = db_queue_fetch_byfileid(ctx->id);
   if (!queue_item || !queue_item->artwork_url)
@@ -1501,23 +1516,11 @@ source_item_stream_get(struct artwork_ctx *ctx)
       return ART_E_NONE;
     }
 
-  url = strdup(queue_item->artwork_url);
+  ret = artwork_get_byurl(ctx->evbuf, queue_item->artwork_url, ctx->req_params);
+
+  snprintf(ctx->path, sizeof(ctx->path), "%s", queue_item->artwork_url);
+
   free_queue_item(queue_item, 0);
-
-  len = strlen(url);
-  if ((len < 14) || (len > PATH_MAX)) // Can't be shorter than http://a/1.jpg
-    goto out_url;
-
-  ext = strrchr(url, '.');
-  if (!ext)
-    goto out_url;
-  if ((strcmp(ext, ".jpg") != 0) && (strcmp(ext, ".png") != 0))
-    goto out_url;
-
-  ret = artwork_get_byurl(ctx->evbuf, url, ctx->max_w, ctx->max_h);
-
- out_url:
-  free(url);
 
   return ret;
 }
@@ -1533,6 +1536,7 @@ source_item_pipe_get(struct artwork_ctx *ctx)
   struct db_queue_item *queue_item;
   const char *proto = "file:";
   char *path;
+  int ret;
 
   DPRINTF(E_SPAM, L_ART, "Trying pipe metadata from %s.metadata\n", ctx->dbmfi->path);
 
@@ -1545,9 +1549,19 @@ source_item_pipe_get(struct artwork_ctx *ctx)
 
   path = queue_item->artwork_url + strlen(proto);
 
+  // Sometimes the file has been replaced, but queue_item->artwork_url hasn't
+  // been updated yet. In that case just stop now.
+  ret = access(path, F_OK);
+  if (ret != 0)
+    {
+      return ART_E_NONE;
+    }
+
   snprintf(ctx->path, sizeof(ctx->path), "%s", path);
 
-  return artwork_get(ctx->evbuf, path, NULL, ctx->max_w, ctx->max_h, false);
+  free_queue_item(queue_item, 0);
+
+  return artwork_get(ctx->evbuf, ctx->path, NULL, false, ctx->data_kind, ctx->req_params);
 }
 
 static int
@@ -1565,7 +1579,7 @@ source_item_discogs_get(struct artwork_ctx *ctx)
 
   snprintf(ctx->path, sizeof(ctx->path), "%s", url);
 
-  ret = artwork_get_byurl(ctx->evbuf, url, ctx->max_w, ctx->max_h);
+  ret = artwork_get_byurl(ctx->evbuf, url, ctx->req_params);
 
   free(url);
   return ret;
@@ -1588,7 +1602,7 @@ source_item_coverartarchive_get(struct artwork_ctx *ctx)
 
   snprintf(ctx->path, sizeof(ctx->path), "%s", url);
 
-  ret = artwork_get_byurl(ctx->evbuf, url, ctx->max_w, ctx->max_h);
+  ret = artwork_get_byurl(ctx->evbuf, url, ctx->req_params);
 
   free(url);
   return ret;
@@ -1601,14 +1615,14 @@ source_item_spotifywebapi_track_get(struct artwork_ctx *ctx)
   char *artwork_url;
   int ret;
 
-  artwork_url = spotifywebapi_artwork_url_get(ctx->dbmfi->path, ctx->max_w, ctx->max_h);
+  artwork_url = spotifywebapi_artwork_url_get(ctx->dbmfi->path, ctx->req_params.max_w, ctx->req_params.max_h);
   if (!artwork_url)
     {
       DPRINTF(E_WARN, L_ART, "No artwork from Spotify for %s\n", ctx->dbmfi->path);
       return ART_E_NONE;
     }
 
-  ret = artwork_get_byurl(ctx->evbuf, artwork_url, ctx->max_w, ctx->max_h);
+  ret = artwork_get_byurl(ctx->evbuf, artwork_url, ctx->req_params);
 
   free(artwork_url);
   return ret;
@@ -1617,27 +1631,32 @@ source_item_spotifywebapi_track_get(struct artwork_ctx *ctx)
 static int
 source_item_spotifywebapi_search_get(struct artwork_ctx *ctx)
 {
-  struct spotifywebapi_access_token info;
+  struct spotifywebapi_status_info webapi_info;
+  struct spotifywebapi_access_token webapi_token;
   char *url;
   int ret;
 
   if (!online_source_is_enabled(&spotify_source))
     return ART_E_NONE;
 
-  spotifywebapi_access_token_get(&info);
-  if (!info.token)
+  spotifywebapi_status_info_get(&webapi_info);
+  if (!webapi_info.token_valid)
+    return ART_E_NONE; // Not logged in
+
+  spotifywebapi_access_token_get(&webapi_token);
+  if (!webapi_token.token)
     return ART_E_ERROR;
 
-  spotify_source.auth_secret = info.token;
+  spotify_source.auth_secret = webapi_token.token;
 
   url = online_source_search(&spotify_source, ctx);
-  free(info.token);
+  free(webapi_token.token);
   if (!url)
     return ART_E_NONE;
 
   snprintf(ctx->path, sizeof(ctx->path), "%s", url);
 
-  ret = artwork_get_byurl(ctx->evbuf, url, ctx->max_w, ctx->max_h);
+  ret = artwork_get_byurl(ctx->evbuf, url, ctx->req_params);
 
   free(url);
   return ret;
@@ -1699,8 +1718,19 @@ source_item_ownpl_get(struct artwork_ctx *ctx)
       if (!dbpli.path)
 	continue;
 
-      ctx->dbmfi->path = dbpli.path;
-      format = source_item_own_get(ctx);
+      if (dbpli.artwork_url)
+	{
+	  format = artwork_get_byurl(ctx->evbuf, dbpli.artwork_url, ctx->req_params);
+	  if (format > 0)
+	    break;
+	}
+
+      // Only handle non-remote paths with source_item_own_get()
+      if (dbpli.path && dbpli.path[0] == '/')
+	{
+	  ctx->dbmfi->path = dbpli.path;
+	  format = source_item_own_get(ctx);
+	}
     }
 
   ctx->dbmfi->path = mfi_path;
@@ -1742,16 +1772,20 @@ process_items(struct artwork_ctx *ctx, int item_mode)
 
       ret = (safe_atoi32(dbmfi.id, &ctx->id) < 0) ||
             (safe_atou32(dbmfi.data_kind, &ctx->data_kind) < 0) ||
+            (safe_atou32(dbmfi.media_kind, &ctx->media_kind) < 0) ||
             (ctx->data_kind > 30);
       if (ret)
 	{
-	  DPRINTF(E_LOG, L_ART, "Error converting dbmfi id or data_kind to number\n");
+	  DPRINTF(E_LOG, L_ART, "Error converting dbmfi id, data_kind or media_kind to number for '%s'\n", dbmfi.path);
 	  continue;
 	}
 
       for (i = 0; artwork_item_source[i].handler; i++)
 	{
 	  if ((artwork_item_source[i].data_kinds & (1 << ctx->data_kind)) == 0)
+	    continue;
+
+	  if ((artwork_item_source[i].media_kinds & ctx->media_kind) == 0)
 	    continue;
 
 	  // If just one handler says we should not cache a negative result then we obey that
@@ -1800,6 +1834,8 @@ process_items(struct artwork_ctx *ctx, int item_mode)
 static int
 process_group(struct artwork_ctx *ctx)
 {
+  struct db_media_file_info dbmfi;
+  bool is_valid;
   int i;
   int ret;
 
@@ -1808,6 +1844,22 @@ process_group(struct artwork_ctx *ctx)
       DPRINTF(E_LOG, L_ART, "Bug! No persistentid in call to process_group()\n");
       ctx->cache = NEVER;
       return -1;
+    }
+
+  // Check if the group is valid (exists and is not e.g. "Unknown album")
+  ret = db_query_start(&ctx->qp);
+  if (ret < 0)
+    {
+      DPRINTF(E_LOG, L_ART, "Could not start query to check if group is valid (persistentid = %" PRIi64 ")\n", ctx->qp.persistentid);
+      goto invalid_group;
+    }
+
+  is_valid = (db_query_fetch_file(&ctx->qp, &dbmfi) == 0 && dbmfi.id && strcmp(dbmfi.album, CFG_NAME_UNKNOWN_ALBUM) != 0 && strcmp(dbmfi.album_artist, CFG_NAME_UNKNOWN_ARTIST) != 0);
+  db_query_end(&ctx->qp);
+  if (!is_valid)
+    {
+      DPRINTF(E_SPAM, L_ART, "Skipping group sources due to unknown album or artist\n");
+      goto invalid_group;
     }
 
   for (i = 0; artwork_group_source[i].handler; i++)
@@ -1838,16 +1890,15 @@ process_group(struct artwork_ctx *ctx)
 	}
     }
 
-  ret = process_items(ctx, 0);
-
-  return ret;
+ invalid_group:
+  return process_items(ctx, 0);
 }
 
 
 /* ------------------------------ ARTWORK API ------------------------------ */
 
 int
-artwork_get_item(struct evbuffer *evbuf, int id, int max_w, int max_h)
+artwork_get_item(struct evbuffer *evbuf, int id, int max_w, int max_h, int format)
 {
   struct artwork_ctx ctx;
   char filter[32];
@@ -1863,8 +1914,9 @@ artwork_get_item(struct evbuffer *evbuf, int id, int max_w, int max_h)
   ctx.qp.type = Q_ITEMS;
   ctx.qp.filter = filter;
   ctx.evbuf = evbuf;
-  ctx.max_w = max_w;
-  ctx.max_h = max_h;
+  ctx.req_params.max_w = max_w;
+  ctx.req_params.max_h = max_h;
+  ctx.req_params.format = format;
   ctx.cache = ON_FAILURE;
   ctx.individual = cfg_getbool(cfg_getsec(cfg, "library"), "artwork_individual");
 
@@ -1882,8 +1934,6 @@ artwork_get_item(struct evbuffer *evbuf, int id, int max_w, int max_h)
     {
       if (ctx.cache & ON_SUCCESS)
 	cache_artwork_add(CACHE_ARTWORK_INDIVIDUAL, id, max_w, max_h, ret, ctx.path, evbuf);
-      if (ctx.cache & STASH)
-	cache_artwork_stash(evbuf, ctx.path, ret);
 
       return ret;
     }
@@ -1896,8 +1946,6 @@ artwork_get_item(struct evbuffer *evbuf, int id, int max_w, int max_h)
     {
       if (ctx.cache & ON_SUCCESS)
 	cache_artwork_add(CACHE_ARTWORK_GROUP, ctx.persistentid, max_w, max_h, ret, ctx.path, evbuf);
-      if (ctx.cache & STASH)
-	cache_artwork_stash(evbuf, ctx.path, ret);
 
       return ret;
     }
@@ -1911,7 +1959,7 @@ artwork_get_item(struct evbuffer *evbuf, int id, int max_w, int max_h)
 }
 
 int
-artwork_get_group(struct evbuffer *evbuf, int id, int max_w, int max_h)
+artwork_get_group(struct evbuffer *evbuf, int id, int max_w, int max_h, int format)
 {
   struct artwork_ctx ctx;
   int ret;
@@ -1931,8 +1979,9 @@ artwork_get_group(struct evbuffer *evbuf, int id, int max_w, int max_h)
   ctx.qp.type = Q_GROUP_ITEMS;
   ctx.qp.persistentid = ctx.persistentid;
   ctx.evbuf = evbuf;
-  ctx.max_w = max_w;
-  ctx.max_h = max_h;
+  ctx.req_params.max_w = max_w;
+  ctx.req_params.max_h = max_h;
+  ctx.req_params.format = format;
   ctx.cache = ON_FAILURE;
   ctx.individual = cfg_getbool(cfg_getsec(cfg, "library"), "artwork_individual");
 
@@ -1941,8 +1990,6 @@ artwork_get_group(struct evbuffer *evbuf, int id, int max_w, int max_h)
     {
       if (ctx.cache & ON_SUCCESS)
 	cache_artwork_add(CACHE_ARTWORK_GROUP, ctx.persistentid, max_w, max_h, ret, ctx.path, evbuf);
-      if (ctx.cache & STASH)
-	cache_artwork_stash(evbuf, ctx.path, ret);
 
       return ret;
     }
@@ -1956,7 +2003,7 @@ artwork_get_group(struct evbuffer *evbuf, int id, int max_w, int max_h)
 }
 
 /* Checks if the file is an artwork file */
-int
+bool
 artwork_file_is_artwork(const char *filename)
 {
   cfg_t *lib;
@@ -1971,7 +2018,7 @@ artwork_file_is_artwork(const char *filename)
 
   for (i = 0; i < n; i++)
     {
-      for (j = 0; j < (sizeof(cover_extension) / sizeof(cover_extension[0])); j++)
+      for (j = 0; j < ARRAY_SIZE(cover_extension); j++)
 	{
 	  ret = snprintf(artwork, sizeof(artwork), "%s.%s", cfg_getnstr(lib, "artwork_basenames", i), cover_extension[j]);
 	  if ((ret < 0) || (ret >= sizeof(artwork)))
@@ -1981,12 +2028,39 @@ artwork_file_is_artwork(const char *filename)
 	    }
 
 	  if (strcmp(artwork, filename) == 0)
-	    return 1;
+	    return true;
 	}
-
-      if (j < (sizeof(cover_extension) / sizeof(cover_extension[0])))
-	break;
     }
 
-  return 0;
+  return false;
+}
+
+bool
+artwork_extension_is_artwork(const char *path)
+{
+  char *ext;
+  int len;
+  int i;
+
+  ext = strrchr(path, '.');
+  if (!ext)
+    return false;
+
+  ext++;
+
+  for (i = 0; i < ARRAY_SIZE(cover_extension); i++)
+    {
+      len = strlen(cover_extension[i]);
+
+      if (strncasecmp(cover_extension[i], ext, len) != 0)
+        continue;
+
+      // Check that after the extension we either have the end or "?"
+      if (ext[len] != '\0' && ext[len] != '?')
+        continue;
+
+      return true;
+    }
+
+  return false;
 }

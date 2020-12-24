@@ -31,7 +31,7 @@
                 </p>
                 <p v-if="track.date_released">
                   <span class="heading">Release date</span>
-                  <span class="title is-6">{{ track.date_released | time('L')}}</span>
+                  <span class="title is-6">{{ track.date_released | time('L') }}</span>
                 </p>
                 <p v-else-if="track.year > 0">
                   <span class="heading">Year</span>
@@ -59,7 +59,12 @@
                 </p>
                 <p>
                   <span class="heading">Quality</span>
-                  <span class="title is-6">{{ track.type}} | {{ track.samplerate}} Hz | {{ track.channels }} channels | {{ track.bitrate}} Kb/s</span>
+                  <span class="title is-6">
+                    {{ track.type }}
+                    <span v-if="track.samplerate"> | {{ track.samplerate }} Hz</span>
+                    <span v-if="track.channels"> | {{ track.channels | channels }}</span>
+                    <span v-if="track.bitrate"> | {{ track.bitrate }} Kb/s</span>
+                  </span>
                 </p>
                 <p>
                   <span class="heading">Added at</span>
@@ -152,15 +157,15 @@ export default {
     },
 
     mark_new: function () {
-      webapi.library_track_update(this.track.id, { 'play_count': 'reset' }).then(() => {
-        this.$emit('play_count_changed')
+      webapi.library_track_update(this.track.id, { play_count: 'reset' }).then(() => {
+        this.$emit('play-count-changed')
         this.$emit('close')
       })
     },
 
     mark_played: function () {
-      webapi.library_track_update(this.track.id, { 'play_count': 'increment' }).then(() => {
-        this.$emit('play_count_changed')
+      webapi.library_track_update(this.track.id, { play_count: 'increment' }).then(() => {
+        this.$emit('play-count-changed')
         this.$emit('close')
       })
     }

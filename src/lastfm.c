@@ -31,13 +31,13 @@
 #include <stdbool.h>
 
 #include <gcrypt.h>
-#include <mxml.h>
 #include <event2/buffer.h>
 #include <event2/http.h>
 
 #include "mxml-compat.h"
 
 #include "db.h"
+#include "conffile.h"
 #include "lastfm.h"
 #include "listener.h"
 #include "logger.h"
@@ -230,7 +230,7 @@ request_post(const char *url, struct keyval *kv, char **errmsg)
   memset(&ctx, 0, sizeof(struct http_client_ctx));
 
   ctx.output_body = http_form_urlencode(kv);
-  if (ret < 0)
+  if (!ctx.output_body)
     {
       DPRINTF(E_LOG, L_LASTFM, "Aborting request, http_form_urlencode failed\n");
       return -1;
@@ -278,7 +278,7 @@ scrobble(int id)
     goto noscrobble;
 
   // Don't scrobble songs with unknown artist
-  if (strcmp(mfi->artist, "Unknown artist") == 0)
+  if (strcmp(mfi->artist, CFG_NAME_UNKNOWN_ARTIST) == 0)
     goto noscrobble;
 
   kv = keyval_alloc();

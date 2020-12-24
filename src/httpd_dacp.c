@@ -117,6 +117,8 @@ dacp_propset_devicevolume(const char *value, struct httpd_request *hreq);
 static void
 dacp_propset_devicepreventplayback(const char *value, struct httpd_request *hreq);
 static void
+dacp_propset_devicebusy(const char *value, struct httpd_request *hreq);
+static void
 dacp_propset_playingtime(const char *value, struct httpd_request *hreq);
 static void
 dacp_propset_shufflestate(const char *value, struct httpd_request *hreq);
@@ -148,22 +150,8 @@ static struct event *seek_timer;
 static int seek_target;
 
 /* If an item is removed from the library while in the queue, we replace it with this */
-static struct media_file_info dummy_mfi =
-{
-  .id = DB_MEDIA_FILE_NON_PERSISTENT_ID,
-  .title = "(unknown title)",
-  .artist = "(unknown artist)",
-  .album = "(unknown album)",
-  .genre = "(unknown genre)",
-};
-static struct db_queue_item dummy_queue_item =
-{
-  .file_id = DB_MEDIA_FILE_NON_PERSISTENT_ID,
-  .title = "(unknown title)",
-  .artist = "(unknown artist)",
-  .album = "(unknown album)",
-  .genre = "(unknown genre)",
-};
+static struct media_file_info dummy_mfi;
+static struct db_queue_item dummy_queue_item;
 
 
 /* -------------------------------- HELPERS --------------------------------- */
@@ -186,7 +174,13 @@ dacp_nowplaying(struct evbuffer *evbuf, struct player_status *status, struct db_
    */
   if (queue_item->data_kind == DATA_KIND_HTTP || queue_item->data_kind == DATA_KIND_PIPE)
     {
-      id = djb_hash(queue_item->album, strlen(queue_item->album));
+      // Could also use queue_item->queue_version, but it changes a bit too much
+      // leading to Remote reloading too much
+      if (queue_item->artwork_url)
+	id = djb_hash(queue_item->artwork_url, strlen(queue_item->artwork_url));
+      else
+	id = djb_hash(queue_item->title, strlen(queue_item->title));
+
       songalbumid = (int64_t)id;
     }
   else
@@ -1011,13 +1005,8 @@ dacp_propset_devicevolume(const char *value, struct httpd_request *hreq)
   player_volume_update_speaker(speaker_info.id, value);
 }
 
-// iTunes seems to use this as way for a speaker to tell the server that it is
-// busy with something else. If the speaker makes the request with the value 1,
-// then iTunes will disable the speaker, and if it is the only speaker, then
-// playback will also be paused. It is not possible for the user to restart the
-// speaker until it has made a request with value 0 (if attempted, iTunes will
-// show it is waiting for the speaker). As you can see from the below, we
-// don't fully match this behaviour, instead we just enable/disable.
+// See player.c:speaker_prevent_playback_set() for comments regarding
+// prevent-playback and busy properties
 static void
 dacp_propset_devicepreventplayback(const char *value, struct httpd_request *hreq)
 {
@@ -1027,11 +1016,27 @@ dacp_propset_devicepreventplayback(const char *value, struct httpd_request *hreq
     return;
 
   if (value[0] == '1')
-    player_speaker_disable(speaker_info.id);
+    player_speaker_prevent_playback_set(speaker_info.id, true);
   else if (value[0] == '0')
-    player_speaker_enable(speaker_info.id);
+    player_speaker_prevent_playback_set(speaker_info.id, false);
   else
     DPRINTF(E_LOG, L_DACP, "Request for setting device-prevent-playback has invalid value: '%s'\n", value);
+}
+
+static void
+dacp_propset_devicebusy(const char *value, struct httpd_request *hreq)
+{
+  struct player_speaker_info speaker_info;
+
+  if (speaker_get(&speaker_info, hreq, "device-busy") < 0)
+    return;
+
+  if (value[0] == '1')
+    player_speaker_busy_set(speaker_info.id, true);
+  else if (value[0] == '0')
+    player_speaker_busy_set(speaker_info.id, false);
+  else
+    DPRINTF(E_LOG, L_DACP, "Request for setting device-busy has invalid value: '%s'\n", value);
 }
 
 static void
@@ -2358,7 +2363,7 @@ dacp_reply_nowplayingartwork(struct httpd_request *hreq)
   if (ret < 0)
     goto no_artwork;
 
-  ret = artwork_get_item(hreq->reply, id, max_w, max_h);
+  ret = artwork_get_item(hreq->reply, id, max_w, max_h, 0);
   len = evbuffer_get_length(hreq->reply);
 
   switch (ret)
@@ -2516,6 +2521,7 @@ dacp_reply_setproperty(struct httpd_request *hreq)
    * dmcp.volume                      0-100, float
    * dmcp.device-volume               -144-0, float (raop volume)
    * dmcp.device-prevent-playback     0/1
+   * dmcp.device-busy                 0/1
    */
 
   /* /ctrl-int/1/setproperty?dacp.shufflestate=1&session-id=100 */
@@ -2894,6 +2900,18 @@ dacp_init(void)
 
   current_rev = 2;
   update_requests = NULL;
+
+  dummy_mfi.id = DB_MEDIA_FILE_NON_PERSISTENT_ID;
+  dummy_mfi.title = CFG_NAME_UNKNOWN_TITLE;
+  dummy_mfi.artist = CFG_NAME_UNKNOWN_ARTIST;
+  dummy_mfi.album = CFG_NAME_UNKNOWN_ALBUM;
+  dummy_mfi.genre = CFG_NAME_UNKNOWN_GENRE;
+
+  dummy_queue_item.file_id = DB_MEDIA_FILE_NON_PERSISTENT_ID;
+  dummy_queue_item.title = CFG_NAME_UNKNOWN_TITLE;
+  dummy_queue_item.artist = CFG_NAME_UNKNOWN_ARTIST;
+  dummy_queue_item.album = CFG_NAME_UNKNOWN_ALBUM;
+  dummy_queue_item.genre = CFG_NAME_UNKNOWN_GENRE;
 
 #ifdef HAVE_EVENTFD
   update_efd = eventfd(0, EFD_CLOEXEC);

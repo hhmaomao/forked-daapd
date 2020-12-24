@@ -23,10 +23,10 @@
       </div>
     </section>
 
-    <tabs-search></tabs-search>
+    <tabs-search :query="search_query"></tabs-search>
 
     <!-- Tracks -->
-    <content-with-heading v-if="show_tracks">
+    <content-with-heading v-if="show_tracks && tracks.total">
       <template slot="heading-left">
         <p class="title is-4">Tracks</p>
       </template>
@@ -44,15 +44,19 @@
       <template slot="footer">
         <nav v-if="show_all_tracks_button" class="level">
           <p class="level-item">
-            <a class="button is-light is-small is-rounded" v-on:click="open_search_tracks">Show all {{ tracks.total }} tracks</a>
+            <a class="button is-light is-small is-rounded" v-on:click="open_search_tracks">Show all {{ tracks.total.toLocaleString() }} tracks</a>
           </p>
         </nav>
-        <p v-if="!tracks.total">No results</p>
       </template>
     </content-with-heading>
+    <content-text v-if="show_tracks && !tracks.total" class="mt-6">
+      <template slot="content">
+        <p><i>No tracks found</i></p>
+      </template>
+    </content-text>
 
     <!-- Artists -->
-    <content-with-heading v-if="show_artists">
+    <content-with-heading v-if="show_artists && artists.total">
       <template slot="heading-left">
         <p class="title is-4">Artists</p>
       </template>
@@ -70,20 +74,37 @@
       <template slot="footer">
         <nav v-if="show_all_artists_button" class="level">
           <p class="level-item">
-            <a class="button is-light is-small is-rounded" v-on:click="open_search_artists">Show all {{ artists.total }} artists</a>
+            <a class="button is-light is-small is-rounded" v-on:click="open_search_artists">Show all {{ artists.total.toLocaleString() }} artists</a>
           </p>
         </nav>
-        <p v-if="!artists.total">No results</p>
       </template>
     </content-with-heading>
+    <content-text v-if="show_artists && !artists.total">
+      <template slot="content">
+        <p><i>No artists found</i></p>
+      </template>
+    </content-text>
 
     <!-- Albums -->
-    <content-with-heading v-if="show_albums">
+    <content-with-heading v-if="show_albums && albums.total">
       <template slot="heading-left">
         <p class="title is-4">Albums</p>
       </template>
       <template slot="content">
-        <spotify-list-item-album v-for="album in albums.items" :key="album.id" :album="album">
+        <spotify-list-item-album v-for="album in albums.items"
+            :key="album.id"
+            :album="album"
+            @click="open_album(album)">
+          <template slot="artwork" v-if="is_visible_artwork">
+            <p class="image is-64x64 fd-has-shadow fd-has-action">
+              <cover-artwork
+                :artwork_url="artwork_url(album)"
+                :artist="album.artist"
+                :album="album.name"
+                :maxwidth="64"
+                :maxheight="64" />
+            </p>
+          </template>
           <template slot="actions">
             <a @click="open_album_dialog(album)">
               <span class="icon has-text-dark"><i class="mdi mdi-dots-vertical mdi-18px"></i></span>
@@ -96,15 +117,19 @@
       <template slot="footer">
         <nav v-if="show_all_albums_button" class="level">
           <p class="level-item">
-            <a class="button is-light is-small is-rounded" v-on:click="open_search_albums">Show all {{ albums.total }} albums</a>
+            <a class="button is-light is-small is-rounded" v-on:click="open_search_albums">Show all {{ albums.total.toLocaleString() }} albums</a>
           </p>
         </nav>
-        <p v-if="!albums.total">No results</p>
       </template>
     </content-with-heading>
+    <content-text v-if="show_albums && !albums.total">
+      <template slot="content">
+        <p><i>No albums found</i></p>
+      </template>
+    </content-text>
 
     <!-- Playlists -->
-    <content-with-heading v-if="show_playlists">
+    <content-with-heading v-if="show_playlists && playlists.total">
       <template slot="heading-left">
         <p class="title is-4">Playlists</p>
       </template>
@@ -122,17 +147,22 @@
       <template slot="footer">
         <nav v-if="show_all_playlists_button" class="level">
           <p class="level-item">
-            <a class="button is-light is-small is-rounded" v-on:click="open_search_playlists">Show all {{ playlists.total }} playlists</a>
+            <a class="button is-light is-small is-rounded" v-on:click="open_search_playlists">Show all {{ playlists.total.toLocaleString() }} playlists</a>
           </p>
         </nav>
-        <p v-if="!playlists.total">No results</p>
       </template>
     </content-with-heading>
+    <content-text v-if="show_playlists && !playlists.total">
+      <template slot="content">
+        <p><i>No playlists found</i></p>
+      </template>
+    </content-text>
   </div>
 </template>
 
 <script>
 import ContentWithHeading from '@/templates/ContentWithHeading'
+import ContentText from '@/templates/ContentText'
 import TabsSearch from '@/components/TabsSearch'
 import SpotifyListItemTrack from '@/components/SpotifyListItemTrack'
 import SpotifyListItemArtist from '@/components/SpotifyListItemArtist'
@@ -142,6 +172,7 @@ import SpotifyModalDialogTrack from '@/components/SpotifyModalDialogTrack'
 import SpotifyModalDialogArtist from '@/components/SpotifyModalDialogArtist'
 import SpotifyModalDialogAlbum from '@/components/SpotifyModalDialogAlbum'
 import SpotifyModalDialogPlaylist from '@/components/SpotifyModalDialogPlaylist'
+import CoverArtwork from '@/components/CoverArtwork'
 import SpotifyWebApi from 'spotify-web-api-js'
 import webapi from '@/webapi'
 import * as types from '@/store/mutation_types'
@@ -149,7 +180,7 @@ import InfiniteLoading from 'vue-infinite-loading'
 
 export default {
   name: 'SpotifyPageSearch',
-  components: { ContentWithHeading, TabsSearch, SpotifyListItemTrack, SpotifyListItemArtist, SpotifyListItemAlbum, SpotifyListItemPlaylist, SpotifyModalDialogTrack, SpotifyModalDialogArtist, SpotifyModalDialogAlbum, SpotifyModalDialogPlaylist, InfiniteLoading },
+  components: { ContentWithHeading, ContentText, TabsSearch, SpotifyListItemTrack, SpotifyListItemArtist, SpotifyListItemAlbum, SpotifyListItemPlaylist, SpotifyModalDialogTrack, SpotifyModalDialogArtist, SpotifyModalDialogAlbum, SpotifyModalDialogPlaylist, InfiniteLoading, CoverArtwork },
 
   data () {
     return {
@@ -172,13 +203,15 @@ export default {
       selected_artist: {},
 
       show_playlist_details_modal: false,
-      selected_playlist: {}
+      selected_playlist: {},
+
+      validSearchTypes: ['track', 'artist', 'album', 'playlist']
     }
   },
 
   computed: {
     recent_searches () {
-      return this.$store.state.recent_searches
+      return this.$store.state.recent_searches.filter(search => !search.startsWith('query:'))
     },
 
     show_tracks () {
@@ -207,6 +240,10 @@ export default {
     },
     show_all_playlists_button () {
       return this.playlists.total > this.playlists.items.length
+    },
+
+    is_visible_artwork () {
+      return this.$store.getters.settings_option('webinterface', 'show_cover_artwork_in_album_lists').value
     }
   },
 
@@ -222,20 +259,19 @@ export default {
       this.reset()
 
       // If no search query present reset and focus search field
-      if (!this.query.query || this.query.query === '') {
+      if (!this.query.query || this.query.query === '' || this.query.query.startsWith('query:')) {
         this.search_query = ''
         this.$refs.search_field.focus()
         return
       }
 
+      this.search_query = this.query.query
       this.search_param.limit = this.query.limit ? this.query.limit : 50
       this.search_param.offset = this.query.offset ? this.query.offset : 0
 
       this.$store.commit(types.ADD_RECENT_SEARCH, this.query.query)
 
-      if (this.query.type.includes(',')) {
-        this.search_all()
-      }
+      this.search_all()
     },
 
     spotify_search: function () {
@@ -245,7 +281,8 @@ export default {
         var spotifyApi = new SpotifyWebApi()
         spotifyApi.setAccessToken(data.webapi_token)
 
-        return spotifyApi.search(this.query.query, this.query.type.split(','), this.search_param)
+        var types = this.query.type.split(',').filter(type => this.validSearchTypes.includes(type))
+        return spotifyApi.search(this.query.query, types, this.search_param)
       })
     },
 
@@ -315,9 +352,10 @@ export default {
         return
       }
 
-      this.$router.push({ path: '/search/spotify',
+      this.$router.push({
+        path: '/search/spotify',
         query: {
-          type: 'track,artist,album,playlist',
+          type: 'track,artist,album,playlist,audiobook,podcast',
           query: this.search_query,
           limit: 3,
           offset: 0
@@ -327,7 +365,8 @@ export default {
     },
 
     open_search_tracks: function () {
-      this.$router.push({ path: '/search/spotify',
+      this.$router.push({
+        path: '/search/spotify',
         query: {
           type: 'track',
           query: this.$route.query.query
@@ -336,7 +375,8 @@ export default {
     },
 
     open_search_artists: function () {
-      this.$router.push({ path: '/search/spotify',
+      this.$router.push({
+        path: '/search/spotify',
         query: {
           type: 'artist',
           query: this.$route.query.query
@@ -345,7 +385,8 @@ export default {
     },
 
     open_search_albums: function () {
-      this.$router.push({ path: '/search/spotify',
+      this.$router.push({
+        path: '/search/spotify',
         query: {
           type: 'album',
           query: this.$route.query.query
@@ -354,7 +395,8 @@ export default {
     },
 
     open_search_playlists: function () {
-      this.$router.push({ path: '/search/spotify',
+      this.$router.push({
+        path: '/search/spotify',
         query: {
           type: 'playlist',
           query: this.$route.query.query
@@ -385,6 +427,17 @@ export default {
     open_playlist_dialog: function (playlist) {
       this.selected_playlist = playlist
       this.show_playlist_details_modal = true
+    },
+
+    open_album: function (album) {
+      this.$router.push({ path: '/music/spotify/albums/' + album.id })
+    },
+
+    artwork_url: function (album) {
+      if (album.images && album.images.length > 0) {
+        return album.images[0].url
+      }
+      return ''
     }
   },
 

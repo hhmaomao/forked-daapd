@@ -34,7 +34,6 @@
 #include "logger.h"
 #include "misc.h"
 #include "transcode.h"
-#include "listener.h"
 #include "db.h"
 #include "player.h" //TODO remove me when player_pmap is removed again
 #include "worker.h"
@@ -75,6 +74,9 @@ static struct output_definition *outputs[] = {
     NULL
 };
 
+// Default volume (must be from 0 - 100)
+#define OUTPUTS_DEFAULT_VOLUME 50
+
 // When we stop, we keep the outputs open for a while, just in case we are
 // actually just restarting. This timeout determines how long we wait before
 // full stop.
@@ -102,6 +104,12 @@ struct output_quality_subscription
   struct media_quality quality;
   struct encode_ctx *encode_ctx;
 };
+
+// Buffer used to pass data to the backends
+static struct output_buffer output_buffer;
+
+static struct output_device *outputs_device_list;
+static int outputs_master_volume;
 
 static struct outputs_callback_register outputs_cb_register[OUTPUTS_MAX_CALLBACKS];
 static struct event *outputs_deferredev;
@@ -210,11 +218,13 @@ deferred_cb(int fd, short what, void *arg)
 
 	  // The device has left the building (stopped/failed), and the backend
 	  // is not using it any more
-	  if (!device->advertised && !device->session)
+	  if (device && !device->advertised && !device->session)
 	    {
 	      outputs_device_remove(device);
 	      device = NULL;
 	    }
+	  else if (device)
+	    device->state = state;
 
 	  DPRINTF(E_DBG, L_PLAYER, "Making deferred callback to %s, id was %d\n", player_pmap(cb), callback_id);
 
@@ -239,9 +249,12 @@ stop_timer_cb(int fd, short what, void *arg)
 }
 
 static void
-device_stop_cb(struct output_device *device, enum output_device_state status)
+device_stop_cb(struct output_device *device, enum output_device_state state)
 {
-  if (status == OUTPUT_STATE_FAILED)
+  if (device)
+    device->state = state;
+
+  if (state == OUTPUT_STATE_FAILED)
     DPRINTF(E_WARN, L_PLAYER, "Failed to stop device\n");
   else
     DPRINTF(E_INFO, L_PLAYER, "Device stopped properly\n");
@@ -385,14 +398,14 @@ device_list_sort(void)
     {
       swaps = 0;
       prev = NULL;
-      for (device = output_device_list; device && device->next; device = device->next)
+      for (device = outputs_device_list; device && device->next; device = device->next)
 	{
 	  next = device->next;
 	  if ( (outputs_priority(device) > outputs_priority(next)) ||
 	       (outputs_priority(device) == outputs_priority(next) && strcasecmp(device->name, next->name) > 0) )
 	    {
-	      if (device == output_device_list)
-		output_device_list = next;
+	      if (device == outputs_device_list)
+		outputs_device_list = next;
 	      if (prev)
 		prev->next = next;
 
@@ -404,6 +417,16 @@ device_list_sort(void)
 	}
     }
   while (swaps > 0);
+}
+
+// Convenience function
+static inline int
+device_state_update(struct output_device *device, int ret)
+{
+  if (ret < 0)
+    device->state = OUTPUT_STATE_FAILED;
+
+  return ret;
 }
 
 static void
@@ -461,6 +484,67 @@ metadata_send(enum output_types type, uint32_t item_id, bool startup, output_met
 }
 
 
+/* ----------------------------- Volume helpers ----------------------------- */
+
+static int
+rel_to_vol(int relvol, int master_volume)
+{
+  float vol;
+
+  if (relvol == 100)
+    return master_volume;
+
+  vol = ((float)relvol * (float)master_volume) / 100.0;
+
+  return (int)vol;
+}
+
+static int
+vol_to_rel(int volume, int master_volume)
+{
+  float rel;
+
+  if (volume == master_volume)
+    return 100;
+
+  rel = ((float)volume / (float)master_volume) * 100.0;
+
+  return (int)rel;
+}
+
+static void
+vol_adjust(void)
+{
+  struct output_device *device;
+  int selected_highest = -1;
+  int all_highest = -1;
+
+  for (device = outputs_device_list; device; device = device->next)
+    {
+      if (OUTPUTS_DEVICE_DISPLAY_SELECTED(device) && (device->volume > selected_highest))
+	selected_highest = device->volume;
+
+      if (device->volume > all_highest)
+	all_highest = device->volume;
+    }
+
+  outputs_master_volume = (selected_highest >= 0) ? selected_highest : all_highest;
+
+  for (device = outputs_device_list; device; device = device->next)
+    {
+      device->relvol = vol_to_rel(device->volume, outputs_master_volume);
+    }
+
+#ifdef DEBUG_VOLUME
+  DPRINTF(E_DBG, L_PLAYER, "*** Master: %d\n", outputs_master_volume);
+
+  for (device = outputs_device_list; device; device = device->next)
+    {
+      DPRINTF(E_DBG, L_PLAYER, "*** %s: abs %d rel %d selected %d\n", device->name, device->volume, device->relvol, OUTPUTS_DEVICE_DISPLAY_SELECTED(device));
+    }
+#endif
+}
+
 /* ----------------------------------- API ---------------------------------- */
 
 struct output_device *
@@ -468,13 +552,13 @@ outputs_device_get(uint64_t device_id)
 {
   struct output_device *device;
 
-  for (device = output_device_list; device; device = device->next)
+  for (device = outputs_device_list; device; device = device->next)
     {
       if (device_id == device->id)
 	return device;
     }
 
-  DPRINTF(E_LOG, L_PLAYER, "Output device with id %" PRIu64 " has disappeared from our list\n", device_id);
+  DPRINTF(E_WARN, L_PLAYER, "Output device with id %" PRIu64 " has disappeared from our list\n", device_id);
   return NULL;
 }
 
@@ -601,25 +685,17 @@ outputs_cb(int callback_id, uint64_t device_id, enum output_device_state state)
   event_active(outputs_deferredev, 0, 0);
 }
 
-// Maybe not so great, seems it would be better if integrated into the callback
-// mechanism so that the notifications where at least deferred
-void
-outputs_listener_notify(void)
-{
-  listener_notify(LISTENER_SPEAKER);
-}
-
 
 /* ---------------------------- Called by player ---------------------------- */
 
 struct output_device *
-outputs_device_add(struct output_device *add, bool new_deselect, int default_volume)
+outputs_device_add(struct output_device *add, bool new_deselect)
 {
   struct output_device *device;
   char *keep_name;
   int ret;
 
-  for (device = output_device_list; device; device = device->next)
+  for (device = outputs_device_list; device; device = device->next)
     {
       if (device->id == add->id)
 	break;
@@ -637,7 +713,7 @@ outputs_device_add(struct output_device *add, bool new_deselect, int default_vol
       if (ret < 0)
 	{
 	  device->selected = 0;
-	  device->volume = default_volume;
+	  device->volume = (outputs_master_volume >= 0) ? outputs_master_volume : OUTPUTS_DEFAULT_VOLUME;;
 	}
 
       free(device->name);
@@ -646,8 +722,8 @@ outputs_device_add(struct output_device *add, bool new_deselect, int default_vol
       if (new_deselect)
 	device->selected = 0;
 
-      device->next = output_device_list;
-      output_device_list = device;
+      device->next = outputs_device_list;
+      outputs_device_list = device;
     }
   // Update to a device already in the list
   else
@@ -686,9 +762,9 @@ outputs_device_add(struct output_device *add, bool new_deselect, int default_vol
 
   device_list_sort();
 
-  device->advertised = 1;
+  vol_adjust();
 
-  listener_notify(LISTENER_SPEAKER);
+  device->advertised = 1;
 
   return device;
 }
@@ -707,7 +783,7 @@ outputs_device_remove(struct output_device *remove)
     outputs_device_stop(remove, device_stop_cb);
 
   prev = NULL;
-  for (device = output_device_list; device; device = device->next)
+  for (device = outputs_device_list; device; device = device->next)
     {
       if (device == remove)
 	break;
@@ -726,43 +802,77 @@ outputs_device_remove(struct output_device *remove)
   DPRINTF(E_INFO, L_PLAYER, "Removing %s device '%s'; stopped advertising\n", remove->type_name, remove->name);
 
   if (!prev)
-    output_device_list = remove->next;
+    outputs_device_list = remove->next;
   else
     prev->next = remove->next;
 
   outputs_device_free(remove);
 
-  listener_notify(LISTENER_SPEAKER);
+  vol_adjust();
+}
+
+void
+outputs_device_select(struct output_device *device, int max_volume)
+{
+  device->selected = 1;
+  device->prevent_playback = 0;
+  device->busy = 0;
+
+  // The purpose of this is to cap the volume for a newly selected device. It is
+  // used by the player to avoid this scenario:
+  // 1 Play on two speakers, say Kitchen (100) and Office (75), master is 100
+  // 2 Disable Office, reduce master to 25, Kitchen is now 25, Office is still 75
+  // 3 Turn on Office, it now blasts at 75
+  // We could avoid this by reducing the unselected Office in step 2, but that
+  // leads to issue #1077, where volumes of unselected devices go to 0 (e.g. by
+  // reducing master to 0 and then increasing again -> unselected stays at 0).
+  if (max_volume >= 0 && device->volume > max_volume)
+    device->volume = max_volume;
+
+  vol_adjust();
+}
+
+void
+outputs_device_deselect(struct output_device *device)
+{
+  device->selected = 0;
+
+  vol_adjust();
 }
 
 int
-outputs_device_start(struct output_device *device, output_status_cb cb)
+outputs_device_start(struct output_device *device, output_status_cb cb, bool only_probe)
 {
-  if (outputs[device->type]->disabled || !outputs[device->type]->device_start)
+  int ret;
+
+  if (outputs[device->type]->disabled || !outputs[device->type]->device_start || !outputs[device->type]->device_probe)
     return -1;
 
   if (device->session)
-    {
-      DPRINTF(E_LOG, L_PLAYER, "Bug! outputs_device_start() called for a device that already has a session\n");
-      return -1;
-    }
+    return 0; // Device is already running, nothing to do
 
-  return outputs[device->type]->device_start(device, callback_add(device, cb));
+  if (only_probe)
+    ret = outputs[device->type]->device_probe(device, callback_add(device, cb));
+  else
+    ret = outputs[device->type]->device_start(device, callback_add(device, cb));
+
+  return device_state_update(device, ret);;
 }
 
 int
 outputs_device_stop(struct output_device *device, output_status_cb cb)
 {
+  int ret;
+
   if (outputs[device->type]->disabled || !outputs[device->type]->device_stop)
     return -1;
 
   if (!device->session)
-    {
-      DPRINTF(E_LOG, L_PLAYER, "Bug! outputs_device_stop() called for a device that has no session\n");
-      return -1;
-    }
+    return 0; // Device is already stopped, nothing to do
 
-  return outputs[device->type]->device_stop(device, callback_add(device, cb));
+  ret = outputs[device->type]->device_stop(device, callback_add(device, cb));
+
+  return device_state_update(device, ret);
 }
 
 int
@@ -772,52 +882,56 @@ outputs_device_stop_delayed(struct output_device *device, output_status_cb cb)
     return -1;
 
   if (!device->session)
-    {
-      DPRINTF(E_LOG, L_PLAYER, "Bug! outputs_device_stop_delayed() called for a device that has no session\n");
-      return -1;
-    }
+    return 0; // Device is already stopped, nothing to do
 
   outputs[device->type]->device_cb_set(device, callback_add(device, cb));
 
   event_add(device->stop_timer, &outputs_stop_timeout);
 
-  return 0;
+  return 1;
 }
 
 int
 outputs_device_flush(struct output_device *device, output_status_cb cb)
 {
+  int ret;
+
   if (outputs[device->type]->disabled || !outputs[device->type]->device_flush)
     return -1;
 
   if (!device->session)
-    return -1;
+    return 0; // Nothing to flush
 
-  return outputs[device->type]->device_flush(device, callback_add(device, cb));
+  ret = outputs[device->type]->device_flush(device, callback_add(device, cb));
+
+  return ret; // We don't change device state just because of a failed flush
 }
 
-int
-outputs_device_probe(struct output_device *device, output_status_cb cb)
+void
+outputs_device_volume_register(struct output_device *device, int absvol, int relvol)
 {
-  if (outputs[device->type]->disabled || !outputs[device->type]->device_probe)
-    return -1;
+  if (absvol > -1)
+    device->volume = absvol;
+  else if (relvol > -1)
+    device->volume = rel_to_vol(relvol, outputs_master_volume);
 
-  if (device->session)
-    {
-      DPRINTF(E_LOG, L_PLAYER, "Bug! outputs_device_probe() called for a device that already has a session\n");
-      return -1;
-    }
-
-  return outputs[device->type]->device_probe(device, callback_add(device, cb));
+  vol_adjust();
 }
 
 int
 outputs_device_volume_set(struct output_device *device, output_status_cb cb)
 {
+  int ret;
+
   if (outputs[device->type]->disabled || !outputs[device->type]->device_volume_set)
     return -1;
 
-  return outputs[device->type]->device_volume_set(device, callback_add(device, cb));
+  if (!device->session)
+    return 0; // Device isn't active
+
+  ret = outputs[device->type]->device_volume_set(device, callback_add(device, cb));
+
+  return ret; // We don't change device state just because of a failed volume change
 }
 
 int
@@ -832,10 +946,30 @@ outputs_device_volume_to_pct(struct output_device *device, const char *volume)
 int
 outputs_device_quality_set(struct output_device *device, struct media_quality *quality, output_status_cb cb)
 {
+  int ret;
+
   if (outputs[device->type]->disabled || !outputs[device->type]->device_quality_set)
     return -1;
 
-  return outputs[device->type]->device_quality_set(device, quality, callback_add(device, cb));
+  ret = outputs[device->type]->device_quality_set(device, quality, callback_add(device, cb));
+
+  return device_state_update(device, ret);
+}
+
+int
+outputs_device_authorize(struct output_device *device, const char *pin, output_status_cb cb)
+{
+  int ret;
+
+  if (outputs[device->type]->disabled || !outputs[device->type]->device_authorize)
+    return -1;
+
+  if (device->session)
+    return 0; // We are already connected to the device - no auth required
+
+  ret = outputs[device->type]->device_authorize(device, pin, callback_add(device, cb));
+
+  return device_state_update(device, ret); // If ret < 0 then we couldn't reach the speaker
 }
 
 void
@@ -876,45 +1010,57 @@ outputs_device_free(struct output_device *device)
   free(device);
 }
 
+// The return value will be the number of devices we need to wait for, either
+// because they are starting or shutting down. The return value is only negative
+// if we don't have to wait, i.e. all the selected devices failed immediately.
 int
-outputs_flush(output_status_cb cb)
+outputs_start(output_status_cb started_cb, output_status_cb stopped_cb, bool only_probe)
 {
   struct output_device *device;
-  int count = 0;
+  int pending = 0;
   int ret;
 
-  for (device = output_device_list; device; device = device->next)
+  for (device = outputs_device_list; device; device = device->next)
     {
-      ret = outputs_device_flush(device, cb);
-      if (ret < 0)
+      if (device->selected)
 	continue;
 
-      count++;
+      ret = outputs_device_stop(device, stopped_cb);
+      if (ret > 0)
+	pending += ret;
     }
 
-  return count;
+  ret = 0; // We don't care about devices that returned an error on stop
+  for (device = outputs_device_list; device; device = device->next)
+    {
+      if (!device->selected)
+	continue;
+
+      ret = outputs_device_start(device, started_cb, only_probe);
+      if (ret > 0)
+	pending += ret;
+    }
+
+  return (pending > 0) ? pending : ret;
 }
 
 int
 outputs_stop(output_status_cb cb)
 {
   struct output_device *device;
-  int count = 0;
+  int pending = 0;
   int ret;
 
-  for (device = output_device_list; device; device = device->next)
+  for (device = outputs_device_list; device; device = device->next)
     {
-      if (!device->session)
-	continue;
-
       ret = outputs_device_stop(device, cb);
       if (ret < 0)
 	continue;
 
-      count++;
+      pending += ret;
     }
 
-  return count;
+  return pending;
 }
 
 int
@@ -922,10 +1068,77 @@ outputs_stop_delayed_cancel(void)
 {
   struct output_device *device;
 
-  for (device = output_device_list; device; device = device->next)
+  for (device = outputs_device_list; device; device = device->next)
     event_del(device->stop_timer);
 
   return 0;
+}
+
+int
+outputs_flush(output_status_cb cb)
+{
+  struct output_device *device;
+  int pending = 0;
+  int ret;
+
+  for (device = outputs_device_list; device; device = device->next)
+    {
+      ret = outputs_device_flush(device, cb);
+      if (ret < 0)
+	continue;
+
+      pending += ret;
+    }
+
+  return pending;
+}
+
+int
+outputs_volume_get(void)
+{
+  return outputs_master_volume;
+}
+
+int
+outputs_volume_set(int volume, output_status_cb cb)
+{
+  struct output_device *device;
+  int pending = 0;
+  int ret;
+
+  if (outputs_master_volume == volume)
+    return 0;
+
+  outputs_master_volume = volume;
+
+  for (device = outputs_device_list; device; device = device->next)
+    {
+      if (!device->selected)
+	continue;
+
+      device->volume = rel_to_vol(device->relvol, outputs_master_volume);
+
+      ret = outputs_device_volume_set(device, cb);
+      if (ret < 0)
+	continue;
+
+      pending += ret;
+    }
+
+  return pending;
+}
+
+int
+outputs_sessions_count(void)
+{
+  struct output_device *device;
+  int count = 0;
+
+  for (device = outputs_device_list; device; device = device->next)
+    if (device->session)
+      count++;
+
+  return count;
 }
 
 void
@@ -975,16 +1188,6 @@ outputs_metadata_purge(void)
     }
 }
 
-void
-outputs_authorize(enum output_types type, const char *pin)
-{
-  if (outputs[type]->disabled)
-    return;
-
-  if (outputs[type]->authorize)
-    outputs[type]->authorize(pin);
-}
-
 int
 outputs_priority(struct output_device *device)
 {
@@ -997,12 +1200,20 @@ outputs_name(enum output_types type)
   return outputs[type]->name;
 }
 
+struct output_device *
+outputs_list(void)
+{
+  return outputs_device_list;
+}
+
 int
 outputs_init(void)
 {
   int no_output;
   int ret;
   int i;
+
+  outputs_master_volume = -1;
 
   CHECK_NULL(L_PLAYER, outputs_deferredev = evtimer_new(evbase_player, deferred_cb, NULL));
 

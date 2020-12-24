@@ -103,6 +103,7 @@ forked_daapd_SOURCES = main.c \
 	library/filescanner.c library/filescanner.h \
 	library/filescanner_ffmpeg.c library/filescanner_playlist.c \
 	library/filescanner_smartpl.c $(ITUNES_SRC) \
+	library/rssscanner.c \
 	library.c library.h \
 	$(MDNS_SRC) mdns.h \
 	remote_pairing.c remote_pairing.h \
@@ -129,7 +130,7 @@ forked_daapd_SOURCES = main.c \
 	worker.c worker.h \
 	settings.c settings.h \
 	input.h input.c \
-	inputs/file_http.c inputs/pipe.c \
+	inputs/file.c inputs/http.c inputs/pipe.c inputs/timer.c \
 	outputs.h outputs.c \
 	outputs/rtp_common.h outputs/rtp_common.c \
 	outputs/raop.c $(RAOP_VERIFICATION_SRC) \

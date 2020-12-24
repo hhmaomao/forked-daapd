@@ -29,8 +29,7 @@ match the version of forked-daapd that you are using. Go to
 forked-daapd.
 
 If you are looking for help on building forked-daapd (not using it), then
-please see the
-[INSTALL](https://github.com/ejurgensen/forked-daapd/blob/master/INSTALL) file.
+please see the [INSTALL.md](INSTALL.md) file.
 
 
 ## Contents
@@ -58,8 +57,7 @@ please see the
 
 ## Getting started
 
-After installation (see [INSTALL](https://github.com/ejurgensen/forked-daapd/blob/master/INSTALL))
-do the following:
+After installation (see [INSTALL.md](INSTALL.md)) do the following:
 
  1. Edit the configuration file (usually `/etc/forked-daapd.conf`) to suit your
     needs
@@ -202,8 +200,18 @@ must be given in the configuration file. See the sample configuration file
 for the syntax.
 
 If your Apple TV requires device verification (always required by Apple TV4 with
-tvOS 10.2) then you can do that through the web interface: Select the device and
-then enter the PIN that the Apple TV displays.
+tvOS 10.2) then you can do that through Settings > Remotes & Outputs in the web
+interface: Select the device and then enter the PIN that the Apple TV displays.
+
+If your speaker is silent when you start playback, and there is no obvious error
+message in the log, you can try disabling ipv6 in the config. Some speakers
+announce that they support ipv6, but in fact don't (at least not with forked-
+daapd).
+
+If the speaker becomes unselected when you start playback, and you in the log
+see "ANNOUNCE request failed in session startup: 400 Bad Request", then try
+the Apple Home app > Allow Speakers & TV Access > Anyone On the Same Network
+(or Everyone).
 
 
 ## Chromecast
@@ -248,8 +256,7 @@ This is currently the only way of listening to your audio on iOS devices, since
 Apple does not allow AirPlay receiver apps, and because Apple Home Sharing
 cannot be supported by forked-daapd. So what you can do instead is install a
 music player app like VLC, connect to the stream and control playback with
-Remote. You can also use MPoD in "On the go"-mode, where control and playback is
-integrated in one app.
+Remote.
 
 Note that MP3 encoding must be supported by ffmpeg/libav for this to work. If
 it is not available you will see a message in the log file. In Debian/Ubuntu you
@@ -307,6 +314,9 @@ it to any remotes or AirPlay devices requesting it.
 Instead of downloading M3U's from your radio stations, you can also make an
 empty M3U file and in it insert links to the M3U's of your radio stations.
 
+Radio streams can only be played by forked-daapd, so that means they will not be
+available to play in DAAP clients like iTunes.
+
 Support for iTunes Music Library XML format is available as a compile-time
 option. By default, metadata from our parsers is preferred over what's in
 the iTunes DB; use itunes_overrides = true if you prefer iTunes' metadata.
@@ -314,6 +324,10 @@ the iTunes DB; use itunes_overrides = true if you prefer iTunes' metadata.
 forked-daapd has support for smart playlists. How to create a smart playlist is
 documented in
 [README_SMARTPL.md](https://github.com/ejurgensen/forked-daapd/blob/master/README_SMARTPL.md).
+
+If you're not satisfied with internet radio metadata that forked-daapd shows,
+then you can read about tweaking it in
+[README_RADIO_STREAMS.md](https://github.com/ejurgensen/forked-daapd/blob/master/README_RADIO_STREAMS.md).
 
 
 ## Artwork
@@ -488,14 +502,15 @@ forked-daapd will not store your password, but will still be able to log you in
 automatically afterwards, because libspotify saves a login token. You can
 configure the location of your Spotify user data in the configuration file.
 
-To permanently logout and remove credentials, delete the contents of
-`/var/cache/forked-daapd/libspotify` (while forked-daapd is stopped).
+To permanently logout and remove Spotify tracks + credentials make a request to
+[http://[your_server_address_here]:3689/api/spotify-logout](http://[your_server_address_here]:3689/api/spotify-logout)
+and also delete the contents of `/var/cache/forked-daapd/libspotify`.
 
 Limitations:
 You will not be able to do any playlist management through forked-daapd - use
 a Spotify client for that. You also can only listen to your music by letting
 forked-daapd do the playback - so that means you can't stream from forked-daapd
-to iTunes.
+to DAAP clients (e.g. iTunes) and RSP clients.
 
 Alternatives:
 If you want forked-daapd to be a selectable metaspeaker in Spotify's client, you
@@ -545,6 +560,8 @@ The source for this version of forked-daapd can be found here:
   [https://github.com/ejurgensen/forked-daapd.git](https://github.com/ejurgensen/forked-daapd.git)
 
 README's for previous versions of forked-daapd:
+
+  [forked-daapd version 27.2](https://github.com/ejurgensen/forked-daapd/blob/27.2/README.md)
 
   [forked-daapd version 27.1](https://github.com/ejurgensen/forked-daapd/blob/27.1/README.md)
 

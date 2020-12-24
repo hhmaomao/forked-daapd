@@ -317,7 +317,7 @@ curl -X PUT "http://localhost:3689/api/player/seek?seek_ms=-30000"
 | GET       | [/api/outputs](#get-a-list-of-available-outputs) | Get a list of available outputs      |
 | PUT       | [/api/outputs/set](#set-enabled-outputs)         | Set enabled outputs                  |
 | GET       | [/api/outputs/{id}](#get-an-output)              | Get an output                        |
-| PUT       | [/api/outputs/{id}](#change-an-output)           | Change an output (enable/disable or volume) |
+| PUT       | [/api/outputs/{id}](#change-an-output)           | Change an output setting             |
 | PUT       | [/api/outputs/{id}/toggle](#toggle-an-output)    | Enable or disable an output, depending on the current state |
 
 
@@ -482,6 +482,7 @@ PUT /api/outputs/{id}
 | --------------- | --------- | -------------------- |
 | selected        | boolean   | *(Optional)* `true` to enable and `false` to disable the output |
 | volume          | integer   | *(Optional)* Volume in percent (0 - 100)  |
+| pin             | string    | *(Optional)* PIN for device verification  |
 
 **Response**
 
@@ -639,6 +640,7 @@ POST /api/queue/items/add
 | playback_from_position | *(Optional)* If the `playback` parameter is set to `start`, playback will be started with the queue item at the position given in `playback_from_position`. |
 | clear           | *(Optional)* If the `clear` parameter is set to `true`, the queue will be cleared before adding the new items.    |
 | shuffle         | *(Optional)* If the `shuffle` parameter is set to `true`, the shuffle mode is activated. If it is set to something else, the shuffle mode is deactivated. To leave the shuffle mode untouched the parameter should be ommited.    |
+| limit           | *(Optional)* Maximum number of tracks to add |
 
 Either the `uris` or the `expression` parameter must be set. If both are set the `uris` parameter takes presedence and the `expression` parameter will be ignored.
 
@@ -677,6 +679,16 @@ curl -X POST "http://localhost:3689/api/queue/items/add?expression=media_kind+is
 }
 ```
 
+Clear current queue, add 10 new random tracks of `genre` _Pop_ and start playback
+```
+curl -X POST "http://localhost:3689/api/queue/items/add?limit=10&clear=true&playback=start&expression=genre+is+%22Pop%22+order+by+random+desc"
+```
+
+```json
+{
+  "count": 10
+}
+```
 
 ### Moving a queue item
 
@@ -746,6 +758,8 @@ curl -X PUT "http://localhost:3689/api/queue/items/2"
 | GET       | [/api/library](#library-information)                        | Get library information              |
 | GET       | [/api/library/playlists](#list-playlists)                   | Get a list of playlists              |
 | GET       | [/api/library/playlists/{id}](#get-a-playlist)              | Get a playlist                       |
+| PUT       | [/api/library/playlists/{id}](#update-a-playlist)           | Update a playlist attribute          |
+| DELETE    | [/api/library/playlists/{id}](#delete-a-playlist)           | Delete a playlist                    |
 | GET       | [/api/library/playlists/{id}/tracks](#list-playlist-tracks) | Get list of tracks for a playlist    |
 | PUT       | [/api/library/playlists/{id}/tracks](#update-playlist-tracks) | Update play count of tracks for a playlist    |
 | GET       | [/api/library/playlists/{id}/playlists](#list-playlists-in-a-playlist-folder) | Get list of playlists for a playlist folder   |
@@ -756,12 +770,15 @@ curl -X PUT "http://localhost:3689/api/queue/items/2"
 | GET       | [/api/library/albums/{id}](#get-an-album)                   | Get an album                         |
 | GET       | [/api/library/albums/{id}/tracks](#list-album-tracks)       | Get list of tracks for an album      |
 | GET       | [/api/library/tracks/{id}](#get-a-track)                    | Get a track                          |
+| GET       | [/api/library/tracks/{id}/playlists](#list-playlists-for-a-track) | Get list of playlists for a track |
 | PUT       | [/api/library/tracks/{id}](#update-track-properties)        | Update a tracks properties (rating, play_count) |
 | GET       | [/api/library/genres](#list-genres)                         | Get list of genres                   |
 | GET       | [/api/library/count](#get-count-of-tracks-artists-and-albums) | Get count of tracks, artists and albums |
 | GET       | [/api/library/files](#list-local-directories)               | Get list of directories in the local library    |
+| POST      | [/api/library/add](#add-an-item-to-the-library)             | Add an item to the library           |
 | PUT       | [/api/update](#trigger-rescan)                              | Trigger a library rescan             |
-| PUT       | [/api/rescan](#trigger-meta-rescan)                         | Trigger a library metadata rescan    |
+| PUT       | [/api/rescan](#trigger-metadata-rescan)                     | Trigger a library metadata rescan    |
+| PUT       | [/api/library/backup](#backup-db)                           | Request library backup db            |
 
 
 
@@ -894,6 +911,59 @@ curl -X GET "http://localhost:3689/api/library/playlists/1"
   "smart_playlist": false,
   "uri": "library:playlist:1"
 }
+```
+
+
+### Update a playlist
+
+Update attributes of a specific playlists in your library
+
+**Endpoint**
+
+```http
+PUT /api/library/playlists/{id}
+```
+
+**Path parameters**
+
+| Parameter       | Value                |
+| --------------- | -------------------- |
+| id              | Playlist id          |
+
+**Query parameters**
+
+| Parameter       | Value                                                       |
+| --------------- | ----------------------------------------------------------- |
+| query_limit     | For RSS feeds, this sets how many podcasts to retrieve      |
+
+
+**Example**
+
+```shell
+curl -X PUT "http://localhost:3689/api/library/playlists/25?query_limit=20"
+```
+
+
+### Delete a playlist
+
+Delete a playlist, e.g. a RSS feed
+
+**Endpoint**
+
+```http
+DELETE /api/library/playlists/{id}
+```
+
+**Path parameters**
+
+| Parameter       | Value                |
+| --------------- | -------------------- |
+| id              | Playlist id          |
+
+**Example**
+
+```shell
+curl -X DELETE "http://localhost:3689/api/library/playlists/25"
 ```
 
 
@@ -1452,6 +1522,63 @@ curl -X GET "http://localhost:3689/api/library/track/1"
 ```
 
 
+### List playlists for a track
+
+Get the list of playlists that contain a track (does not return smart playlists)
+
+**Endpoint**
+
+```http
+GET /api/library/tracks/{id}/playlists
+```
+
+**Path parameters**
+
+| Parameter       | Value                |
+| --------------- | -------------------- |
+| id              | Track id             |
+
+**Query parameters**
+
+| Parameter       | Value                                                       |
+| --------------- | ----------------------------------------------------------- |
+| offset          | *(Optional)* Offset of the first playlist to return         |
+| limit           | *(Optional)* Maximum number of playlist to return           |
+
+**Response**
+
+| Key             | Type     | Value                                     |
+| --------------- | -------- | ----------------------------------------- |
+| items           | array    | Array of [`playlist`](#playlist-object) objects              |
+| total           | integer  | Total number of playlists                 |
+| offset          | integer  | Requested offset of the first playlist    |
+| limit           | integer  | Requested maximum number of playlists     |
+
+**Example**
+
+```shell
+curl -X GET "http://localhost:3689/api/library/tracks/27/playlists"
+```
+
+```json
+{
+  "items": [
+    {
+      "id": 1,
+      "name": "playlist",
+      "path": "/music/srv/playlist.m3u",
+      "smart_playlist": false,
+      "uri": "library:playlist:1"
+    },
+    ...
+  ],
+  "total": 2,
+  "offset": 0,
+  "limit": -1
+}
+```
+
+
 ### Update track properties
 
 Change properties of a specific track (supported properties are "rating" and "play_count")
@@ -1814,6 +1941,27 @@ On success returns the HTTP `204 No Content` success status response code.
 curl -X PUT "http://localhost:3689/api/rescan"
 ```
 
+### Backup DB
+
+Request a library backup - configuration must be enabled and point to a valid writable path. Maintenance method.
+
+**Endpoint**
+
+```http
+PUT /api/library/backup
+```
+
+**Response**
+
+On success returns the HTTP `200 OK` success status response code.
+If backups are not enabled returns HTTP `503 Service Unavailable` response code.
+Otherwise a HTTP `500 Internal Server Error` response is returned.
+
+**Example**
+
+```shell
+curl -X PUT "http://localhost:3689/api/library/backup"
+```
 
 ## Search
 
@@ -2059,8 +2207,9 @@ curl -X GET "http://localhost:3689/api/config"
 | --------- | ------------------------------------------------ | ------------------------------------ |
 | GET       | [/api/settings](#list-categories)                | Get all available categories         |
 | GET       | [/api/settings/{category-name}](#get-a-category) | Get all available options for a category   |
-| GET       | [/api/settings/{category-name}/{option-name}](#get-a-option) | Get a single setting option    |
-| PUT       | [/api/settings/{category-name}/{option-name}](#change-a-option-value) | Change the value of a setting option    |
+| GET       | [/api/settings/{category-name}/{option-name}](#get-an-option) | Get a single setting option    |
+| PUT       | [/api/settings/{category-name}/{option-name}](#change-an-option-value) | Change the value of a setting option    |
+| DELETE    | [/api/settings/{category-name}/{option-name}](#delete-an-option) | Reset a setting option to its default   |
 
 
 
@@ -2150,7 +2299,7 @@ curl -X GET "http://localhost:3689/api/settings/webinterface"
 ```
 
 
-### Get a option
+### Get an option
 
 Get a single settings option
 
@@ -2180,7 +2329,7 @@ curl -X GET "http://localhost:3689/api/settings/webinterface/show_composer_now_p
 ```
 
 
-### Change a option value
+### Change an option value
 
 Get a single settings option
 
@@ -2206,6 +2355,28 @@ On success returns the HTTP `204 No Content` success status response code.
 
 ```shell
 curl -X PUT "http://localhost:3689/api/settings/webinterface/show_composer_now_playing" --data "{\"name\":\"show_composer_now_playing\",\"value\":true}"
+```
+
+
+### Delete an option
+
+Delete a single settings option (thus resetting it to default)
+
+**Endpoint**
+
+```http
+DELETE /api/settings/{category-name}/{option-name}
+```
+
+**Response**
+
+On success returns the HTTP `204 No Content` success status response code.
+
+
+**Example**
+
+```shell
+curl -X DELETE "http://localhost:3689/api/settings/webinterface/show_composer_now_playing"
 ```
 
 

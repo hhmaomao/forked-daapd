@@ -40,12 +40,14 @@ static struct lws_context *context;
 static pthread_t tid_websocket;
 
 static int websocket_port;
-static bool ws_exit = false;
+static bool websocket_exit = false;
 
 // Event mask of events to notify websocket clients
-static short events;
+static short websocket_events;
 // Event mask of events processed by the writeable callback
-static short write_events;
+static short websocket_write_events;
+// Counter for events to keep track of when to write
+static unsigned short websocket_write_events_counter;
 
 
 
@@ -54,7 +56,7 @@ static void
 listener_cb(short event_mask)
 {
   // Add event to the event mask, clients will be notified at the next break of the libwebsockets service loop
-  events |= event_mask;
+  websocket_events |= event_mask;
 }
 
 /*
@@ -77,6 +79,7 @@ callback_http(struct lws *wsi, enum lws_callback_reasons reason, void *user, voi
 struct ws_session_data_notify
 {
   short events;
+  unsigned short counter; // to keep track of whether this user has already written
 };
 
 /*
@@ -263,6 +266,7 @@ callback_notify(struct lws *wsi, enum lws_callback_reasons reason, void *user, v
       case LWS_CALLBACK_ESTABLISHED:
 	// Initialize session data for new connections
 	memset(session_data, 0, sizeof(struct ws_session_data_notify));
+	session_data->counter = websocket_write_events_counter;
 	break;
 
       case LWS_CALLBACK_RECEIVE:
@@ -270,9 +274,10 @@ callback_notify(struct lws *wsi, enum lws_callback_reasons reason, void *user, v
 	break;
 
       case LWS_CALLBACK_SERVER_WRITEABLE:
-	if (write_events)
+	if (websocket_write_events && (websocket_write_events_counter != session_data->counter))
 	  {
-	    send_notify_reply(write_events, wsi);
+	    send_notify_reply(websocket_write_events, wsi);
+	    session_data->counter = websocket_write_events_counter;
 	  }
 	break;
 
@@ -318,13 +323,14 @@ websocket(void *arg)
   listener_add(listener_cb, LISTENER_UPDATE | LISTENER_DATABASE | LISTENER_PAIRING | LISTENER_SPOTIFY | LISTENER_LASTFM | LISTENER_SPEAKER
 	       | LISTENER_PLAYER | LISTENER_OPTIONS | LISTENER_VOLUME | LISTENER_QUEUE);
 
-  while(!ws_exit)
+  while(!websocket_exit)
     {
       lws_service(context, 1000);
-      if (events)
+      if (websocket_events)
 	{
-	  write_events = events;
-	  events = 0;
+	  websocket_write_events = websocket_events;
+	  websocket_write_events_counter++;
+	  websocket_events = 0;
 	  lws_callback_on_writable_all_protocol(context, &protocols[WS_PROTOCOL_NOTIFY]);
 	}
     }
@@ -387,6 +393,9 @@ websocket_init(void)
   info.gid = -1;
   info.uid = -1;
 
+  // Set header space to avoid "LWS Ran out of header data space" error
+  info.max_http_header_data = 4096;
+
   // Log levels below NOTICE are only emmited if libwebsockets was built with DEBUG defined
   lws_set_log_level(LLL_ERR | LLL_WARN | LLL_NOTICE | LLL_INFO | LLL_DEBUG,
 		    logger_libwebsockets);
@@ -398,7 +407,7 @@ websocket_init(void)
       return -1;
     }
 
-
+  websocket_write_events_counter = 0;
   ret = pthread_create(&tid_websocket, NULL, websocket, NULL);
   if (ret < 0)
     {
@@ -416,7 +425,7 @@ websocket_deinit(void)
 {
   if (websocket_port > 0)
     {
-      ws_exit = true;
+      websocket_exit = true;
       pthread_join(tid_websocket, NULL);
     }
 }

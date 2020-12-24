@@ -53,7 +53,12 @@
                 </p>
                 <p>
                   <span class="heading">Quality</span>
-                  <span class="title is-6">{{ item.type}} | {{ item.samplerate }} Hz | {{ item.channels }} | {{ item.bitrate }} Kb/s</span>
+                  <span class="title is-6">
+                    {{ item.type }}
+                    <span v-if="item.samplerate"> | {{ item.samplerate }} Hz</span>
+                    <span v-if="item.channels"> | {{ item.channels | channels }}</span>
+                    <span v-if="item.bitrate"> | {{ item.bitrate }} Kb/s</span>
+                  </span>
                 </p>
               </div>
             </div>
@@ -79,7 +84,7 @@ import SpotifyWebApi from 'spotify-web-api-js'
 
 export default {
   name: 'ModalDialogQueueItem',
-  props: [ 'show', 'item' ],
+  props: ['show', 'item'],
 
   data () {
     return {
@@ -95,7 +100,7 @@ export default {
 
     play: function () {
       this.$emit('close')
-      webapi.player_play({ 'item_id': this.item.id })
+      webapi.player_play({ item_id: this.item.id })
     },
 
     open_album: function () {

@@ -17,11 +17,14 @@ import PageGenreTracks from '@/pages/PageGenreTracks'
 import PageArtistTracks from '@/pages/PageArtistTracks'
 import PagePodcasts from '@/pages/PagePodcasts'
 import PagePodcast from '@/pages/PagePodcast'
-import PageAudiobooks from '@/pages/PageAudiobooks'
-import PageAudiobook from '@/pages/PageAudiobook'
+import PageAudiobooksAlbums from '@/pages/PageAudiobooksAlbums'
+import PageAudiobooksArtists from '@/pages/PageAudiobooksArtists'
+import PageAudiobooksArtist from '@/pages/PageAudiobooksArtist'
+import PageAudiobooksAlbum from '@/pages/PageAudiobooksAlbum'
 import PagePlaylists from '@/pages/PagePlaylists'
 import PagePlaylist from '@/pages/PagePlaylist'
 import PageFiles from '@/pages/PageFiles'
+import PageRadioStreams from '@/pages/PageRadioStreams'
 import PageSearch from '@/pages/PageSearch'
 import PageAbout from '@/pages/PageAbout'
 import SpotifyPageBrowse from '@/pages/SpotifyPageBrowse'
@@ -32,6 +35,7 @@ import SpotifyPageAlbum from '@/pages/SpotifyPageAlbum'
 import SpotifyPagePlaylist from '@/pages/SpotifyPagePlaylist'
 import SpotifyPageSearch from '@/pages/SpotifyPageSearch'
 import SettingsPageWebinterface from '@/pages/SettingsPageWebinterface'
+import SettingsPageArtwork from '@/pages/SettingsPageArtwork'
 import SettingsPageOnlineServices from '@/pages/SettingsPageOnlineServices'
 import SettingsPageRemotesOutputs from '@/pages/SettingsPageRemotesOutputs'
 
@@ -86,7 +90,7 @@ export const router = new VueRouter({
       path: '/music/artists/:artist_id',
       name: 'Artist',
       component: PageArtist,
-      meta: { show_progress: true }
+      meta: { show_progress: true, has_index: true }
     },
     {
       path: '/music/artists/:artist_id/tracks',
@@ -138,14 +142,36 @@ export const router = new VueRouter({
     },
     {
       path: '/audiobooks',
-      name: 'Audiobooks',
-      component: PageAudiobooks,
+      redirect: '/audiobooks/artists'
+    },
+    {
+      path: '/audiobooks/artists',
+      name: 'AudiobooksArtists',
+      component: PageAudiobooksArtists,
+      meta: { show_progress: true, has_tabs: true, has_index: true }
+    },
+    {
+      path: '/audiobooks/artists/:artist_id',
+      name: 'AudiobooksArtist',
+      component: PageAudiobooksArtist,
       meta: { show_progress: true }
+    },
+    {
+      path: '/audiobooks/albums',
+      name: 'AudiobooksAlbums',
+      component: PageAudiobooksAlbums,
+      meta: { show_progress: true, has_tabs: true, has_index: true }
     },
     {
       path: '/audiobooks/:album_id',
       name: 'Audiobook',
-      component: PageAudiobook,
+      component: PageAudiobooksAlbum,
+      meta: { show_progress: true }
+    },
+    {
+      path: '/radio',
+      name: 'Radio',
+      component: PageRadioStreams,
       meta: { show_progress: true }
     },
     {
@@ -226,6 +252,11 @@ export const router = new VueRouter({
       component: SettingsPageWebinterface
     },
     {
+      path: '/settings/artwork',
+      name: 'Settings Artwork',
+      component: SettingsPageArtwork
+    },
+    {
       path: '/settings/online-services',
       name: 'Settings Online Services',
       component: SettingsPageOnlineServices
@@ -245,11 +276,11 @@ export const router = new VueRouter({
         }, 10)
       })
     } else if (to.path === from.path && to.hash) {
-      return { selector: to.hash, offset: { x: 0, y: 90 } }
+      return { selector: to.hash, offset: { x: 0, y: 120 } }
     } else if (to.hash) {
       return new Promise((resolve, reject) => {
         setTimeout(() => {
-          resolve({ selector: to.hash, offset: { x: 0, y: 90 } })
+          resolve({ selector: to.hash, offset: { x: 0, y: 120 } })
         }, 10)
       })
     } else if (to.meta.has_index) {
@@ -269,9 +300,15 @@ export const router = new VueRouter({
 })
 
 router.beforeEach((to, from, next) => {
-  const burgerMenuVisible = store.state.show_burger_menu
-  if (burgerMenuVisible) {
+  if (store.state.show_burger_menu) {
     store.commit(types.SHOW_BURGER_MENU, false)
+    next(false)
+    return
   }
-  next(!burgerMenuVisible)
+  if (store.state.show_player_menu) {
+    store.commit(types.SHOW_PLAYER_MENU, false)
+    next(false)
+    return
+  }
+  next(true)
 })

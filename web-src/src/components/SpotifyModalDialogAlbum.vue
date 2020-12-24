@@ -19,7 +19,7 @@
                 </p>
                 <p>
                   <span class="heading">Release date</span>
-                  <span class="title is-6">{{ album.release_date }}</span>
+                  <span class="title is-6">{{ album.release_date | time('L') }}</span>
                 </p>
                 <p>
                   <span class="heading">Type</span>
@@ -51,7 +51,7 @@ import webapi from '@/webapi'
 
 export default {
   name: 'SpotifyModalDialogAlbum',
-  props: [ 'show', 'album' ],
+  props: ['show', 'album'],
 
   data () {
     return {

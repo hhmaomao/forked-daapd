@@ -1,7 +1,7 @@
 dnl Process this file with autoconf to produce a configure script.
 
 AC_PREREQ([2.60])
-AC_INIT([forked-daapd], [27.1])
+AC_INIT([forked-daapd], [27.2])
 
 AC_CONFIG_SRCDIR([config.h.in])
 AC_CONFIG_MACRO_DIR([m4])
@@ -89,6 +89,10 @@ AC_SEARCH_LIBS([pthread_setname_np], [pthread],
 	[AC_SEARCH_LIBS([pthread_set_name_np], [pthread],
 		[AC_CHECK_FUNCS([pthread_set_name_np])])])
 
+AC_SEARCH_LIBS([log10], [m])
+AC_SEARCH_LIBS([lrint], [m])
+AC_SEARCH_LIBS([fabs], [m])
+
 dnl Large File Support (LFS)
 AC_SYS_LARGEFILE
 AC_TYPE_OFF_T
@@ -113,10 +117,15 @@ FORK_FUNC_REQUIRE([COMMON], [GNU libunistring], [LIBUNISTRING], [unistring],
 
 FORK_MODULES_CHECK([FORKED], [ZLIB], [zlib], [deflate], [zlib.h])
 FORK_MODULES_CHECK([FORKED], [CONFUSE], [libconfuse >= 3.0], [cfg_init], [confuse.h])
-FORK_MODULES_CHECK([FORKED], [MINIXML], [mxml], [mxmlNewElement], [mxml.h],
-	[AC_CHECK_FUNCS([mxmlGetOpaque] [mxmlGetText] [mxmlGetType] [mxmlGetFirstChild])])
+FORK_MODULES_CHECK([FORKED], [LIBCURL], [libcurl], [curl_global_init], [curl/curl.h])
 
-dnl SQLite3 requires extra checks
+FORK_MODULES_CHECK([FORKED], [MINIXML], [mxml],
+	[mxmlNewElement], [mxml.h],
+	[
+	 dnl See mxml-compat.h
+	 AC_CHECK_FUNCS([mxmlGetOpaque] [mxmlGetText] [mxmlGetType] [mxmlGetFirstChild])
+	])
+
 FORK_MODULES_CHECK([COMMON], [SQLITE3], [sqlite3 >= 3.5.0],
 	[sqlite3_initialize], [sqlite3.h],
 	[dnl Check that SQLite3 has the unlock notify API built-in
@@ -137,7 +146,6 @@ FORK_MODULES_CHECK([COMMON], [SQLITE3], [sqlite3 >= 3.5.0],
 		[AC_MSG_RESULT([[runtime will tell]])])
 	])
 
-dnl libevent2 requires version checks
 FORK_MODULES_CHECK([FORKED], [LIBEVENT], [libevent >= 2],
 	[event_base_new], [event2/event.h],
 	[dnl check for old version
@@ -146,7 +154,6 @@ FORK_MODULES_CHECK([FORKED], [LIBEVENT], [libevent >= 2],
 			[Define to 1 if you have libevent 2 (<2.1.4)])])
 	])
 
-dnl json-c version checks
 FORK_MODULES_CHECK([FORKED], [JSON_C], [json-c],
 	[json_tokener_parse], [json.h],
 	[dnl check for old version
@@ -155,7 +162,6 @@ FORK_MODULES_CHECK([FORKED], [JSON_C], [json-c],
 			[Define to 1 if you have json-c < 0.11])])
 	])
 
-dnl antlr version checks
 FORK_FUNC_REQUIRE([FORKED], [ANTLR3 C runtime], [ANTLR3C], [antlr3c],
 	[antlr3BaseRecognizerNew], [antlr3.h],
 	[AC_CHECK_FUNC([[antlr3NewAsciiStringInPlaceStream]],
@@ -247,10 +253,6 @@ FORK_ARG_WITH_CHECK([FORKED_OPTS], [Pulseaudio support], [pulseaudio], [LIBPULSE
 	[AC_CHECK_FUNCS([pa_threaded_mainloop_set_name])])
 AM_CONDITIONAL([COND_PULSEAUDIO], [[test "x$with_pulseaudio" = "xyes"]])
 
-dnl Build with libcurl
-FORK_ARG_WITH_CHECK([FORKED_OPTS], [libcurl support], [libcurl], [LIBCURL],
-	[libcurl], [curl_global_init], [curl/curl.h])
-
 dnl Build with libwebsockets
 FORK_ARG_WITH_CHECK([FORKED_OPTS], [libwebsockets support], [libwebsockets], [LIBWEBSOCKETS],
 	[libwebsockets >= 2.0.2])
@@ -260,9 +262,12 @@ dnl Build with libsodium
 FORK_ARG_WITH_CHECK([FORKED_OPTS], [libsodium support], [libsodium], [LIBSODIUM],
 	[libsodium], [sodium_init], [sodium.h])
 
-dnl Build with libplist
-FORK_ARG_WITH_CHECK([FORKED_OPTS], [libplist support], [libplist], [LIBPLIST],
-	[libplist >= 0.16], [plist_dict_get_item], [plist/plist.h])
+dnl Build with libplist (2.2.0 does not ship libplist.pc, only libplist-2.0.pc)
+PKG_CHECK_EXISTS([libplist],
+	[FORK_ARG_WITH_CHECK([FORKED_OPTS], [libplist support], [libplist], [LIBPLIST],
+		[libplist >= 0.16], [plist_dict_get_item], [plist/plist.h])],
+	[FORK_ARG_WITH_CHECK([FORKED_OPTS], [libplist support], [libplist], [LIBPLIST],
+		[libplist-2.0], [plist_dict_get_item], [plist/plist.h])])
 
 dnl Build with libevent_pthreads
 FORK_ARG_WITH_CHECK([FORKED_OPTS], [libevent_pthreads support],
@@ -280,9 +285,7 @@ AM_CONDITIONAL([COND_AVAHI], [[test "x$with_avahi" = "xyes"]])
 
 dnl Spotify with dynamic linking to libspotify
 FORK_ARG_ENABLE([Spotify support], [spotify], [SPOTIFY],
-	[AS_IF([[test "x$with_libcurl" = "xno"]],
-		[AC_MSG_ERROR([[Spotify support requires libcurl]])])
-	 AS_IF([[test "x$with_libevent_pthreads" = "xno"]],
+	[AS_IF([[test "x$with_libevent_pthreads" = "xno"]],
 		[AC_MSG_ERROR([[Spotify support requires libevent_pthreads]])])
 	 FORK_MODULES_CHECK([SPOTIFY], [LIBSPOTIFY], [libspotify],
 		[], [libspotify/api.h])
@@ -296,11 +299,8 @@ FORK_ARG_ENABLE([Spotify support], [spotify], [SPOTIFY],
 	])
 AM_CONDITIONAL([COND_SPOTIFY], [[test "x$enable_spotify" = "xyes"]])
 
-dnl LastFM support with libcurl
-FORK_ARG_ENABLE([LastFM support], [lastfm], [LASTFM],
-	[AS_IF([[test "x$with_libcurl" = "xno"]],
-		[AC_MSG_ERROR([[LastFM support requires libcurl]])])
-	])
+dnl LastFM support
+FORK_ARG_DISABLE([LastFM support], [lastfm], [LASTFM])
 AM_CONDITIONAL([COND_LASTFM], [[test "x$enable_lastfm" = "xyes"]])
 
 dnl ChromeCast support with libprotobuf-c

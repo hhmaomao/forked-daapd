@@ -7,37 +7,37 @@ Vue.use(Vuex)
 export default new Vuex.Store({
   state: {
     config: {
-      'websocket_port': 0,
-      'version': '',
-      'buildoptions': [ ]
+      websocket_port: 0,
+      version: '',
+      buildoptions: []
     },
     settings: {
-      'categories': []
+      categories: []
     },
     library: {
-      'artists': 0,
-      'albums': 0,
-      'songs': 0,
-      'db_playtime': 0,
-      'updating': false
+      artists: 0,
+      albums: 0,
+      songs: 0,
+      db_playtime: 0,
+      updating: false
     },
     audiobooks_count: { },
     podcasts_count: { },
-    outputs: [ ],
+    outputs: [],
     player: {
-      'state': 'stop',
-      'repeat': 'off',
-      'consume': false,
-      'shuffle': false,
-      'volume': 0,
-      'item_id': 0,
-      'item_length_ms': 0,
-      'item_progress_ms': 0
+      state: 'stop',
+      repeat: 'off',
+      consume: false,
+      shuffle: false,
+      volume: 0,
+      item_id: 0,
+      item_length_ms: 0,
+      item_progress_ms: 0
     },
     queue: {
-      'version': 0,
-      'count': 0,
-      'items': [ ]
+      version: 0,
+      count: 0,
+      items: []
     },
     lastfm: {},
     spotify: {},
@@ -47,14 +47,19 @@ export default new Vuex.Store({
     spotify_featured_playlists: [],
 
     notifications: {
-      'next_id': 1,
-      'list': []
+      next_id: 1,
+      list: []
     },
     recent_searches: [],
 
     hide_singles: false,
+    hide_spotify: false,
+    artists_sort: 'Name',
+    artist_albums_sort: 'Name',
+    albums_sort: 'Name',
     show_only_next_items: false,
-    show_burger_menu: false
+    show_burger_menu: false,
+    show_player_menu: false
   },
 
   getters: {
@@ -90,6 +95,18 @@ export default new Vuex.Store({
         }
       }
       return null
+    },
+
+    settings_category: (state) => (categoryName) => {
+      return state.settings.categories.find(elem => elem.name === categoryName)
+    },
+
+    settings_option: (state) => (categoryName, optionName) => {
+      const category = state.settings.categories.find(elem => elem.name === categoryName)
+      if (!category) {
+        return {}
+      }
+      return category.options.find(elem => elem.name === optionName)
     }
   },
 
@@ -170,22 +187,37 @@ export default new Vuex.Store({
     [types.HIDE_SINGLES] (state, hideSingles) {
       state.hide_singles = hideSingles
     },
+    [types.HIDE_SPOTIFY] (state, hideSpotify) {
+      state.hide_spotify = hideSpotify
+    },
+    [types.ARTISTS_SORT] (state, sort) {
+      state.artists_sort = sort
+    },
+    [types.ARTIST_ALBUMS_SORT] (state, sort) {
+      state.artist_albums_sort = sort
+    },
+    [types.ALBUMS_SORT] (state, sort) {
+      state.albums_sort = sort
+    },
     [types.SHOW_ONLY_NEXT_ITEMS] (state, showOnlyNextItems) {
       state.show_only_next_items = showOnlyNextItems
     },
     [types.SHOW_BURGER_MENU] (state, showBurgerMenu) {
       state.show_burger_menu = showBurgerMenu
+    },
+    [types.SHOW_PLAYER_MENU] (state, showPlayerMenu) {
+      state.show_player_menu = showPlayerMenu
     }
   },
 
   actions: {
     add_notification ({ commit, state }, notification) {
       const newNotification = {
-        'id': state.notifications.next_id++,
-        'type': notification.type,
-        'text': notification.text,
-        'topic': notification.topic,
-        'timeout': notification.timeout
+        id: state.notifications.next_id++,
+        type: notification.type,
+        text: notification.text,
+        topic: notification.topic,
+        timeout: notification.timeout
       }
 
       commit(types.ADD_NOTIFICATION, newNotification)

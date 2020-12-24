@@ -39,6 +39,7 @@
 #include <stdbool.h>
 #include <unistd.h>
 #include <stdint.h>
+#include <inttypes.h>
 #include <fcntl.h>
 #include <string.h>
 #include <errno.h>
@@ -53,7 +54,8 @@
 
 #include <event2/event.h>
 #include <event2/buffer.h>
-#include <mxml.h>
+
+#include "mxml-compat.h"
 
 #include "input.h"
 #include "misc.h"
@@ -64,16 +66,15 @@
 #include "player.h"
 #include "worker.h"
 #include "commands.h"
-#include "mxml-compat.h"
 
 // Maximum number of pipes to watch for data
 #define PIPE_MAX_WATCH 4
 // Max number of bytes to read from a pipe at a time
 #define PIPE_READ_MAX 65536
 // Max number of bytes to buffer from metadata pipes
-#define PIPE_METADATA_BUFLEN_MAX 262144
+#define PIPE_METADATA_BUFLEN_MAX 1048576
 // Ignore pictures with larger size than this
-#define PIPE_PICTURE_SIZE_MAX 262144
+#define PIPE_PICTURE_SIZE_MAX 1048576
 // Where we store pictures for the artwork module to read
 #define PIPE_TMPFILE_TEMPLATE "/tmp/forked-daapd.XXXXXX.ext"
 #define PIPE_TMPFILE_TEMPLATE_EXTLEN 4
@@ -340,29 +341,33 @@ handle_progress(struct input_metadata *m, char *progress)
 {
   char *s;
   char *ptr;
-  uint64_t start;
-  uint64_t pos;
-  uint64_t end;
+  // Below must be signed to avoid casting in the calculations of pos_ms/len_ms
+  int64_t start;
+  int64_t pos;
+  int64_t end;
 
   if (!(s = strtok_r(progress, "/", &ptr)))
     return;
-  safe_atou64(s, &start);
+  safe_atoi64(s, &start);
 
   if (!(s = strtok_r(NULL, "/", &ptr)))
     return;
-  safe_atou64(s, &pos);
+  safe_atoi64(s, &pos);
 
   if (!(s = strtok_r(NULL, "/", &ptr)))
     return;
-  safe_atou64(s, &end);
+  safe_atoi64(s, &end);
 
   if (!start || !pos || !end)
     return;
 
-  if (pos > start)
-    m->pos_ms = (pos - start) * 1000 / pipe_sample_rate;
-  if (end > start)
-    m->len_ms = (end - start) * 1000 / pipe_sample_rate;
+  // Note that negative positions are allowed and supported. A negative position
+  // of e.g. -1000 means that the track will start in one second.
+  m->pos_is_updated = true;
+  m->pos_ms = (pos - start) * 1000 / pipe_sample_rate;
+  m->len_ms = (end > start) ? (end - start) * 1000 / pipe_sample_rate : 0;
+
+  DPRINTF(E_DBG, L_PLAYER, "Received Shairport metadata progress: %" PRIi64 "/%" PRIi64 "/%" PRIi64 " => %d/%u ms\n", start, pos, end, m->pos_ms, m->len_ms);
 }
 
 static void
@@ -447,6 +452,8 @@ handle_picture(struct input_metadata *m, uint8_t *data, int data_len)
       DPRINTF(E_LOG, L_PLAYER, "Incomplete write of artwork to '%s' (%zd/%d)\n", pipe_metadata.pict_tmpfile_path, ret, data_len);
       return;
     }
+
+  DPRINTF(E_DBG, L_PLAYER, "Wrote pipe artwork to '%s'\n", pipe_metadata.pict_tmpfile_path);
 
   m->artwork_url = safe_asprintf("file:%s", pipe_metadata.pict_tmpfile_path);
 }
@@ -751,6 +758,7 @@ pipe_metadata_watch_del(void *arg)
 static void
 pipe_metadata_read_cb(evutil_socket_t fd, short event, void *arg)
 {
+  size_t len;
   int ret;
 
   ret = evbuffer_read(pipe_metadata.evbuf, pipe_metadata.pipe->fd, PIPE_READ_MAX);
@@ -769,11 +777,12 @@ pipe_metadata_read_cb(evutil_socket_t fd, short event, void *arg)
       goto readd;
     }
 
-  if (evbuffer_get_length(pipe_metadata.evbuf) > PIPE_METADATA_BUFLEN_MAX)
+  len = evbuffer_get_length(pipe_metadata.evbuf);
+  if (len > PIPE_METADATA_BUFLEN_MAX)
     {
-      DPRINTF(E_LOG, L_PLAYER, "Can't process data from metadata pipe, reading will stop\n");
-      pipe_metadata_watch_del(NULL);
-      return;
+      DPRINTF(E_LOG, L_PLAYER, "Buffer for metadata pipe '%s' is full, discarding %zu bytes\n", pipe_metadata.pipe->path, len);
+      evbuffer_drain(pipe_metadata.evbuf, len);
+      goto readd;
     }
 
   ret = pipe_metadata_handle(&pipe_metadata.parsed, pipe_metadata.evbuf);

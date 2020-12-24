@@ -262,14 +262,13 @@ httpd_fixup_uri(struct evhttp_request *req)
 /* --------------------------- REQUEST HELPERS ------------------------------ */
 
 
-
 void
-httpd_redirect_to_admin(struct evhttp_request *req)
+httpd_redirect_to(struct evhttp_request *req, const char *path)
 {
   struct evkeyvalq *headers;
 
   headers = evhttp_request_get_output_headers(req);
-  evhttp_add_header(headers, "Location", "/admin.html");
+  evhttp_add_header(headers, "Location", path);
 
   httpd_send_reply(req, HTTP_MOVETEMP, "Moved", NULL, HTTPD_SEND_NO_GZIP);
 }
@@ -301,7 +300,7 @@ httpd_request_etag_matches(struct evhttp_request *req, const char *etag)
 
   // Add cache headers to allow client side caching
   output_headers = evhttp_request_get_output_headers(req);
-  evhttp_add_header(output_headers, "Cache-Control", "private no-cache");
+  evhttp_add_header(output_headers, "Cache-Control", "private,no-cache,max-age=0");
   evhttp_add_header(output_headers, "ETag", etag);
 
   return false;
@@ -325,11 +324,12 @@ httpd_request_not_modified_since(struct evhttp_request *req, time_t mtime)
   struct evkeyvalq *output_headers;
   char last_modified[1000];
   const char *modified_since;
+  struct tm timebuf;
 
   input_headers = evhttp_request_get_input_headers(req);
   modified_since = evhttp_find_header(input_headers, "If-Modified-Since");
 
-  strftime(last_modified, sizeof(last_modified), "%a, %d %b %Y %H:%M:%S %Z", gmtime(&mtime));
+  strftime(last_modified, sizeof(last_modified), "%a, %d %b %Y %H:%M:%S %Z", gmtime_r(&mtime, &timebuf));
 
   // Return not modified, if given timestamp matches "If-Modified-Since" request header
   if (modified_since && (strcasecmp(last_modified, modified_since) == 0))
@@ -337,10 +337,26 @@ httpd_request_not_modified_since(struct evhttp_request *req, time_t mtime)
 
   // Add cache headers to allow client side caching
   output_headers = evhttp_request_get_output_headers(req);
-  evhttp_add_header(output_headers, "Cache-Control", "private no-cache");
+  evhttp_add_header(output_headers, "Cache-Control", "private,no-cache,max-age=0");
   evhttp_add_header(output_headers, "Last-Modified", last_modified);
 
   return false;
+}
+
+void
+httpd_response_not_cachable(struct evhttp_request *req)
+{
+  struct evkeyvalq *output_headers;
+
+  output_headers = evhttp_request_get_output_headers(req);
+
+  // Remove potentially set cache control headers
+  evhttp_remove_header(output_headers, "Cache-Control");
+  evhttp_remove_header(output_headers, "Last-Modified");
+  evhttp_remove_header(output_headers, "ETag");
+
+  // Tell clients that they are not allowed to cache this response
+  evhttp_add_header(output_headers, "Cache-Control", "no-store");
 }
 
 static void
@@ -434,17 +450,9 @@ serve_file(struct evhttp_request *req, const char *uri)
       ret = stat(path, &sb);
       if (ret < 0)
         {
-	  if (strcmp(uri, "/") == 0)
-	    {
-	      httpd_redirect_to_admin(req);
-	      return;
-	    }
-	  else
-	    {
-	      DPRINTF(E_LOG, L_HTTPD, "Could not stat() %s: %s\n", path, strerror(errno));
-	      httpd_send_error(req, HTTP_NOTFOUND, "Not Found");
-	      return;
-	    }
+	  DPRINTF(E_LOG, L_HTTPD, "Could not stat() %s: %s\n", path, strerror(errno));
+	  httpd_send_error(req, HTTP_NOTFOUND, "Not Found");
+	  return;
 	}
     }
 
@@ -816,14 +824,14 @@ httpd_gen_cb(struct evhttp_request *req, void *arg)
   if (!uri)
     {
       DPRINTF(E_WARN, L_HTTPD, "No URI in request\n");
-      httpd_redirect_to_admin(req);
+      httpd_redirect_to(req, "/");
       return;
     }
 
   parsed = httpd_uri_parse(uri);
   if (!parsed || !parsed->path)
     {
-      httpd_redirect_to_admin(req);
+      httpd_redirect_to(req, "/");
       goto out;
     }
 
@@ -1104,8 +1112,9 @@ httpd_stream_file(struct evhttp_request *req, int id)
 
   if (mfi->data_kind != DATA_KIND_FILE)
     {
-      evhttp_send_error(req, 500, "Cannot stream radio station");
+      DPRINTF(E_LOG, L_HTTPD, "Could not serve '%s' to client, not a file\n", mfi->path);
 
+      evhttp_send_error(req, 500, "Cannot stream non-file content");
       goto out_free_mfi;
     }
 
@@ -1115,7 +1124,6 @@ httpd_stream_file(struct evhttp_request *req, int id)
       DPRINTF(E_LOG, L_HTTPD, "Out of memory for struct stream_ctx\n");
 
       evhttp_send_error(req, HTTP_SERVUNAVAIL, "Internal Server Error");
-
       goto out_free_mfi;
     }
   memset(st, 0, sizeof(struct stream_ctx));

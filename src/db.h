@@ -5,6 +5,7 @@
 #include <time.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <limits.h>
 
 #include "outputs.h"
 
@@ -61,11 +62,6 @@ enum query_type {
 #define ARTWORK_UNKNOWN   0
 #define ARTWORK_NONE      1
 #define ARTWORK_EMBEDDED  2
-#define ARTWORK_OWN       3
-#define ARTWORK_DIR       4
-#define ARTWORK_PARENTDIR 5
-#define ARTWORK_SPOTIFY   6
-#define ARTWORK_HTTP      7
 
 #define DB_ADMIN_SCHEMA_VERSION_MAJOR "schema_version_major"
 #define DB_ADMIN_SCHEMA_VERSION_MINOR "schema_version_minor"
@@ -125,6 +121,8 @@ enum media_kind {
   MEDIA_KIND_MUSICVIDEO = 32,
   MEDIA_KIND_TVSHOW = 64,
 };
+
+#define MEDIA_KIND_ALL USHRT_MAX
 
 const char *
 db_media_kind_label(enum media_kind media_kind);
@@ -194,7 +192,7 @@ struct media_file_info {
   char *description;     /* daap.songdescription */
 
   uint32_t db_timestamp;
-  uint32_t time_added;   /* FIXME: time_t */
+  uint32_t time_added;
   uint32_t time_modified;
   uint32_t time_played;
   uint32_t time_skipped;
@@ -236,6 +234,7 @@ enum pl_type {
   PL_FOLDER = 1,
   PL_SMART = 2,
   PL_PLAIN = 3,
+  PL_RSS  = 4,
   PL_MAX,
 };
 
@@ -255,9 +254,10 @@ struct playlist_info {
   char *virtual_path;    /* virtual path of underlying playlist */
   uint32_t parent_id;    /* Id of parent playlist if the playlist is nested */
   uint32_t directory_id; /* Id of directory */
-  char *query_order;     /* order by clause if it is a smart playlist */
-  int32_t query_limit;   /* limit if it is a smart playlist */
+  char *query_order;     /* order by clause, used by e.g. a smart playlists */
+  int32_t query_limit;   /* limit, used by e.g. smart playlists */
   uint32_t media_kind;
+  char *artwork_url;     /* optional artwork */
   uint32_t items;        /* number of items (mimc) */
   uint32_t streams;      /* number of internet streams */
 };
@@ -280,6 +280,7 @@ struct db_playlist_info {
   char *query_order;
   char *query_limit;
   char *media_kind;
+  char *artwork_url;
   char *items;
   char *streams;
 };
@@ -296,6 +297,13 @@ struct group_info {
   char *songalbumartist; /* song album artist (asaa) */
   uint64_t songartistid; /* song artist id (asri) */
   uint32_t song_length;
+  uint32_t data_kind;
+  uint32_t media_kind;
+  uint32_t year;
+  uint32_t date_released;
+  uint32_t time_added;
+  uint32_t time_played;
+  uint32_t seek;
 };
 
 #define gri_offsetof(field) offsetof(struct group_info, field)
@@ -310,6 +318,13 @@ struct db_group_info {
   char *songalbumartist;
   char *songartistid;
   char *song_length;
+  char *data_kind;
+  char *media_kind;
+  char *year;
+  char *date_released;
+  char *time_added;
+  char *time_played;
+  char *seek;
 };
 
 #define dbgri_offsetof(field) offsetof(struct db_group_info, field)
@@ -761,7 +776,6 @@ db_pairing_add(struct pairing_info *pi);
 int
 db_pairing_fetch_byguid(struct pairing_info *pi);
 
-#ifdef HAVE_SPOTIFY_H
 /* Spotify */
 void
 db_spotify_purge(void);
@@ -771,7 +785,6 @@ db_spotify_pl_delete(int id);
 
 void
 db_spotify_files_delete(void);
-#endif
 
 /* Admin */
 int
@@ -801,9 +814,6 @@ db_speaker_save(struct output_device *device);
 
 int
 db_speaker_get(struct output_device *device, uint64_t id);
-
-void
-db_speaker_clear_all(void);
 
 /* Queue */
 int
@@ -939,6 +949,8 @@ db_watch_enum_end(struct watch_enum *we);
 int
 db_watch_enum_fetchwd(struct watch_enum *we, uint32_t *wd);
 
+int
+db_backup();
 
 int
 db_perthread_init(void);

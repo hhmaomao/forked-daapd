@@ -37,6 +37,7 @@ ordertag	:	STRTAG
 			|	INTTAG
 			|	DATETAG
 			|	ENUMTAG
+			|	RANDOMTAG
 			|	(XXX)? NeverUsedRule
 			;
 
@@ -86,6 +87,7 @@ STRTAG		:	'artist'
 			|	'album_id'
 			|	'songartistid'
 			|	'songalbumid'
+			|	'codectype'
 			;
 
 INTTAG		:	'play_count'
@@ -95,6 +97,10 @@ INTTAG		:	'play_count'
 			|	'compilation'
 			|	'track'
 			|	'disc'
+			|	'bitrate'
+			|	'bits_per_sample'
+			|	'samplerate'
+			|	'song_length'
 			;
 
 DATETAG		:	'time_added'
@@ -110,6 +116,9 @@ ENUMTAG		:	'data_kind'
 
 GROUPTAG	:	'track_count'
 			|	'album_count'
+			;
+
+RANDOMTAG	:	'random'
 			;
 
 INCLUDES	:	'includes'

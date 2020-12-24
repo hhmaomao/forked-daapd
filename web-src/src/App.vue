@@ -6,8 +6,11 @@
       <!-- Setting v-show to true on the router-view tag avoids jumpiness during transitions -->
       <router-view v-show="true" />
     </transition>
+    <modal-dialog-remote-pairing :show="pairing_active" @close="pairing_active = false" />
     <notifications v-show="!show_burger_menu" />
-    <navbar-bottom v-show="!show_burger_menu" />
+    <navbar-bottom />
+    <div class="fd-overlay-fullscreen" v-show="show_burger_menu || show_player_menu"
+        @click="show_burger_menu = show_player_menu = false"></div>
   </div>
 </template>
 
@@ -15,29 +18,46 @@
 import NavbarTop from '@/components/NavbarTop'
 import NavbarBottom from '@/components/NavbarBottom'
 import Notifications from '@/components/Notifications'
+import ModalDialogRemotePairing from '@/components/ModalDialogRemotePairing'
 import webapi from '@/webapi'
 import * as types from '@/store/mutation_types'
 import ReconnectingWebSocket from 'reconnectingwebsocket'
+import moment from 'moment'
 
 export default {
   name: 'App',
-  components: { NavbarTop, NavbarBottom, Notifications },
+  components: { NavbarTop, NavbarBottom, Notifications, ModalDialogRemotePairing },
   template: '<App/>',
 
   data () {
     return {
       token_timer_id: 0,
-      reconnect_attempts: 0
+      reconnect_attempts: 0,
+      pairing_active: false
     }
   },
 
   computed: {
-    show_burger_menu () {
-      return this.$store.state.show_burger_menu
+    show_burger_menu: {
+      get () {
+        return this.$store.state.show_burger_menu
+      },
+      set (value) {
+        this.$store.commit(types.SHOW_BURGER_MENU, value)
+      }
+    },
+    show_player_menu: {
+      get () {
+        return this.$store.state.show_player_menu
+      },
+      set (value) {
+        this.$store.commit(types.SHOW_PLAYER_MENU, value)
+      }
     }
   },
 
   created: function () {
+    moment.locale(navigator.language)
     this.connect()
 
     //  Start the progress bar on app start
@@ -47,7 +67,7 @@ export default {
     this.$router.beforeEach((to, from, next) => {
       if (to.meta.show_progress) {
         if (to.meta.progress !== undefined) {
-          let meta = to.meta.progress
+          const meta = to.meta.progress
           this.$Progress.parseMeta(meta)
         }
         this.$Progress.start()
@@ -92,8 +112,14 @@ export default {
         protocol = 'wss://'
       }
 
+      var wsUrl = protocol + window.location.hostname + ':' + vm.$store.state.config.websocket_port
+      if (process.env.NODE_ENV === 'development' && process.env.VUE_APP_WEBSOCKET_SERVER) {
+        // If we are running in the development server, use the websocket url configured in .env.development
+        wsUrl = process.env.VUE_APP_WEBSOCKET_SERVER
+      }
+
       var socket = new ReconnectingWebSocket(
-        protocol + window.location.hostname + ':' + vm.$store.state.config.websocket_port,
+        wsUrl,
         'notify',
         { reconnectInterval: 3000 }
       )
@@ -204,17 +230,25 @@ export default {
     update_pairing: function () {
       webapi.pairing().then(({ data }) => {
         this.$store.commit(types.UPDATE_PAIRING, data)
+        this.pairing_active = data.active
       })
+    },
+
+    update_is_clipped: function () {
+      if (this.show_burger_menu || this.show_player_menu) {
+        document.querySelector('html').classList.add('is-clipped')
+      } else {
+        document.querySelector('html').classList.remove('is-clipped')
+      }
     }
   },
 
   watch: {
     'show_burger_menu' () {
-      if (this.show_burger_menu) {
-        document.querySelector('html').classList.add('is-clipped')
-      } else {
-        document.querySelector('html').classList.remove('is-clipped')
-      }
+      this.update_is_clipped()
+    },
+    'show_player_menu' () {
+      this.update_is_clipped()
     }
   }
 }

@@ -1,5 +1,13 @@
 <template>
   <content-with-heading>
+      <template slot="options">
+        <div class="columns">
+          <div class="column">
+            <p class="heading" style="margin-bottom: 24px;">Sort by</p>
+            <dropdown-menu v-model="sort" :options="sort_options"></dropdown-menu>
+          </div>
+        </div>
+      </template>
     <template slot="heading-left">
       <p class="title is-4">{{ artist.name }}</p>
     </template>
@@ -15,14 +23,7 @@
     </template>
     <template slot="content">
       <p class="heading has-text-centered-mobile">{{ artist.album_count }} albums | <a class="has-text-link" @click="open_tracks">{{ artist.track_count }} tracks</a></p>
-      <list-item-album v-for="album in albums.items" :key="album.id" :album="album" @click="open_album(album)">
-        <template slot="actions">
-          <a @click="open_dialog(album)">
-            <span class="icon has-text-dark"><i class="mdi mdi-dots-vertical mdi-18px"></i></span>
-          </a>
-        </template>
-      </list-item-album>
-      <modal-dialog-album :show="show_details_modal" :album="selected_album" @close="show_details_modal = false" />
+      <list-albums :albums="albums_list"></list-albums>
       <modal-dialog-artist :show="show_artist_details_modal" :artist="artist" @close="show_artist_details_modal = false" />
     </template>
   </content-with-heading>
@@ -31,16 +32,18 @@
 <script>
 import { LoadDataBeforeEnterMixin } from './mixin'
 import ContentWithHeading from '@/templates/ContentWithHeading'
-import ListItemAlbum from '@/components/ListItemAlbum'
-import ModalDialogAlbum from '@/components/ModalDialogAlbum'
+import ListAlbums from '@/components/ListAlbums'
 import ModalDialogArtist from '@/components/ModalDialogArtist'
+import DropdownMenu from '@/components/DropdownMenu'
 import webapi from '@/webapi'
+import * as types from '@/store/mutation_types'
+import Albums from '@/lib/Albums'
 
 const artistData = {
   load: function (to) {
     return Promise.all([
       webapi.library_artist(to.params.artist_id),
-      webapi.library_albums(to.params.artist_id)
+      webapi.library_artist_albums(to.params.artist_id)
     ])
   },
 
@@ -52,18 +55,34 @@ const artistData = {
 
 export default {
   name: 'PageArtist',
-  mixins: [ LoadDataBeforeEnterMixin(artistData) ],
-  components: { ContentWithHeading, ListItemAlbum, ModalDialogAlbum, ModalDialogArtist },
+  mixins: [LoadDataBeforeEnterMixin(artistData)],
+  components: { ContentWithHeading, ListAlbums, ModalDialogArtist, DropdownMenu },
 
   data () {
     return {
       artist: {},
-      albums: {},
+      albums: { items: [] },
 
-      show_details_modal: false,
-      selected_album: {},
-
+      sort_options: ['Name', 'Release date'],
       show_artist_details_modal: false
+    }
+  },
+
+  computed: {
+    albums_list () {
+      return new Albums(this.albums.items, {
+        sort: this.sort,
+        group: false
+      })
+    },
+
+    sort: {
+      get () {
+        return this.$store.state.artist_albums_sort
+      },
+      set (value) {
+        this.$store.commit(types.ARTIST_ALBUMS_SORT, value)
+      }
     }
   },
 
@@ -74,15 +93,6 @@ export default {
 
     play: function () {
       webapi.player_play_uri(this.albums.items.map(a => a.uri).join(','), true)
-    },
-
-    open_album: function (album) {
-      this.$router.push({ path: '/music/albums/' + album.id })
-    },
-
-    open_dialog: function (album) {
-      this.selected_album = album
-      this.show_details_modal = true
     }
   }
 }

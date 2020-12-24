@@ -10,6 +10,9 @@ module.exports = {
 
   assetsDir: 'player',
 
+  // Relative public path 
+  publicPath: './',
+
   // Do not add hashes to the generated js/css filenames, would otherwise
   // require to adjust the Makefile in htdocs each time the web interface is
   // build
@@ -24,13 +27,13 @@ module.exports = {
     // localhost:3689
     proxy: {
       '/api': {
-        target: 'http://localhost:3689'
+        target: process.env.VUE_APP_JSON_API_SERVER
       },
       '/artwork': {
-        target: 'http://localhost:3689'
+        target: process.env.VUE_APP_JSON_API_SERVER
       },
       '/stream.mp3': {
-        target: 'http://localhost:3689'
+        target: process.env.VUE_APP_JSON_API_SERVER
       }
     }
   }

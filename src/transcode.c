@@ -178,6 +178,11 @@ struct encode_ctx
   uint8_t header[44];
 };
 
+enum probe_type
+{
+  PROBE_TYPE_DEFAULT,
+  PROBE_TYPE_QUICK,
+};
 
 /* -------------------------- PROFILE CONFIGURATION ------------------------ */
 
@@ -233,7 +238,15 @@ init_settings(struct settings_ctx *settings, enum transcode_profile profile, str
       case XCODE_JPEG:
 	settings->encode_video = 1;
 	settings->silent = 1;
+// With ffmpeg 4.3 (> libavformet 58.29) "image2" only works for actual file
+// output. It's possible we should have used "image2pipe" all along, but since
+// "image2" has been working we only replace it going forward.
+#if (LIBAVFORMAT_VERSION_MAJOR > 58) || ((LIBAVFORMAT_VERSION_MAJOR == 58) && (LIBAVFORMAT_VERSION_MINOR > 29))
+	settings->format = "image2pipe";
+#else
 	settings->format = "image2";
+#endif
+
 	settings->in_format = "mjpeg";
 	settings->pix_fmt = AV_PIX_FMT_YUVJ420P;
 	settings->video_codec = AV_CODEC_ID_MJPEG;
@@ -242,9 +255,27 @@ init_settings(struct settings_ctx *settings, enum transcode_profile profile, str
       case XCODE_PNG:
 	settings->encode_video = 1;
 	settings->silent = 1;
+// See explanation above
+#if (LIBAVFORMAT_VERSION_MAJOR > 58) || ((LIBAVFORMAT_VERSION_MAJOR == 58) && (LIBAVFORMAT_VERSION_MINOR > 29))
+	settings->format = "image2pipe";
+#else
 	settings->format = "image2";
+#endif
 	settings->pix_fmt = AV_PIX_FMT_RGB24;
 	settings->video_codec = AV_CODEC_ID_PNG;
+	break;
+
+      case XCODE_VP8:
+	settings->encode_video = 1;
+	settings->silent = 1;
+// See explanation above
+#if (LIBAVFORMAT_VERSION_MAJOR > 58) || ((LIBAVFORMAT_VERSION_MAJOR == 58) && (LIBAVFORMAT_VERSION_MINOR > 29))
+	settings->format = "image2pipe";
+#else
+	settings->format = "image2";
+#endif
+	settings->pix_fmt = AV_PIX_FMT_YUVJ420P;
+	settings->video_codec = AV_CODEC_ID_VP8;
 	break;
 
       default:
@@ -270,7 +301,7 @@ init_settings(struct settings_ctx *settings, enum transcode_profile profile, str
 
   if (quality && quality->bits_per_sample && (quality->bits_per_sample != 8 * av_get_bytes_per_sample(settings->sample_format)))
     {
-      DPRINTF(E_LOG, L_XCODE, "Bug! Mismatch between profile and media quality\n");
+      DPRINTF(E_LOG, L_XCODE, "Bug! Mismatch between profile (%d bps) and media quality (%d bps)\n", 8 * av_get_bytes_per_sample(settings->sample_format), quality->bits_per_sample);
       return -1;
     }
 
@@ -436,6 +467,12 @@ stream_add(struct encode_ctx *ctx, struct stream_ctx *s, enum AVCodecID codec_id
   if (codec_id == AV_CODEC_ID_MJPEG)
     av_dict_set(&options, "huffman", "default", 0);
 
+  // 20 ms frames is the current ffmpeg default, but we set it anyway, so that
+  // we don't risk issues if future versions change the default (it would become
+  // an issue because outputs/cast.c relies on 20 ms frames)
+  if (codec_id == AV_CODEC_ID_OPUS)
+    av_dict_set(&options, "frame_duration", "20", 0);
+
   ret = avcodec_open2(s->codec, NULL, &options);
   if (ret < 0)
     {
@@ -572,7 +609,10 @@ encode_write(struct encode_ctx *ctx, struct stream_ctx *s, AVFrame *filt_frame)
 
       ret = av_interleaved_write_frame(ctx->ofmt_ctx, ctx->encoded_pkt);
       if (ret < 0)
-	break;
+        {
+	  DPRINTF(E_WARN, L_XCODE, "av_interleaved_write_frame() failed: %s\n", err2str(ret));
+	  break;
+        }
     }
 
   return ret;
@@ -727,69 +767,76 @@ read_decode_filter_encode_write(struct transcode_ctx *ctx)
 
 /* --------------------------- INPUT/OUTPUT INIT --------------------------- */
 
-static AVCodecContext *
-open_decoder(unsigned int *stream_index, struct decode_ctx *ctx, enum AVMediaType type)
+static int
+open_decoder(AVCodecContext **dec_ctx, unsigned int *stream_index, struct decode_ctx *ctx, enum AVMediaType type)
 {
-  AVCodecContext *dec_ctx;
   AVCodec *decoder;
   int ret;
 
-  *stream_index = av_find_best_stream(ctx->ifmt_ctx, type, -1, -1, &decoder, 0);
-  if ((*stream_index < 0) || (!decoder))
+  ret = av_find_best_stream(ctx->ifmt_ctx, type, -1, -1, &decoder, 0);
+  if (ret < 0)
     {
       if (!ctx->settings.silent)
-	DPRINTF(E_LOG, L_XCODE, "No stream data or decoder for stream #%d\n", *stream_index);
-      return NULL;
+	DPRINTF(E_LOG, L_XCODE, "Error finding best stream: %s\n", err2str(ret));
+      return ret;
     }
 
-  CHECK_NULL(L_XCODE, dec_ctx = avcodec_alloc_context3(decoder));
+  *stream_index = (unsigned int)ret;
+
+  CHECK_NULL(L_XCODE, *dec_ctx = avcodec_alloc_context3(decoder));
 
   // In open_filter() we need to tell the sample rate and format that the decoder
   // is giving us - however sample rate of dec_ctx will be 0 if we don't prime it
   // with the streams codecpar data.
-  ret = avcodec_parameters_to_context(dec_ctx, ctx->ifmt_ctx->streams[*stream_index]->codecpar);
+  ret = avcodec_parameters_to_context(*dec_ctx, ctx->ifmt_ctx->streams[*stream_index]->codecpar);
   if (ret < 0)
     {
       DPRINTF(E_LOG, L_XCODE, "Failed to copy codecpar for stream #%d: %s\n", *stream_index, err2str(ret));
-      avcodec_free_context(&dec_ctx);
-      return NULL;
+      avcodec_free_context(dec_ctx);
+      return ret;
     }
 
   if (type == AVMEDIA_TYPE_AUDIO)
     {
-      dec_ctx->request_sample_fmt = ctx->settings.sample_format;
-      dec_ctx->request_channel_layout = ctx->settings.channel_layout;
+      (*dec_ctx)->request_sample_fmt = ctx->settings.sample_format;
+      (*dec_ctx)->request_channel_layout = ctx->settings.channel_layout;
     }
 
-  ret = avcodec_open2(dec_ctx, NULL, NULL);
+  ret = avcodec_open2(*dec_ctx, NULL, NULL);
   if (ret < 0)
     {
       DPRINTF(E_LOG, L_XCODE, "Failed to open decoder for stream #%d: %s\n", *stream_index, err2str(ret));
-      avcodec_free_context(&dec_ctx);
-      return NULL;
+      avcodec_free_context(dec_ctx);
+      return ret;
     }
 
-  return dec_ctx;
+  return 0;
 }
 
 static int
-open_input(struct decode_ctx *ctx, const char *path, struct evbuffer *evbuf)
+open_input(struct decode_ctx *ctx, const char *path, struct evbuffer *evbuf, enum probe_type probe_type)
 {
   AVDictionary *options = NULL;
   AVCodecContext *dec_ctx;
   AVInputFormat *ifmt;
   unsigned int stream_index;
   const char *user_agent;
-  int ret;
+  int ret = 0;
 
   CHECK_NULL(L_XCODE, ctx->ifmt_ctx = avformat_alloc_context());
 
+  // Caller can ask for small probe to start quicker + search for embedded
+  // artwork quicker. Especially useful for http sources. The standard probe
+  // size takes around 5 sec for an mp3, while the below only takes around a
+  // second. The improved performance comes at the cost of possible inaccuracy.
+  if (probe_type == PROBE_TYPE_QUICK)
+    {
+      ctx->ifmt_ctx->probesize = 65536;
+      ctx->ifmt_ctx->format_probesize = 65536;
+    }
+
   if (ctx->data_kind == DATA_KIND_HTTP)
     {
-# ifndef HAVE_FFMPEG
-      // Without this, libav is slow to probe some internet streams, which leads to RAOP timeouts
-      ctx->ifmt_ctx->probesize = 64000;
-# endif
       av_dict_set(&options, "icy", "1", 0);
 
       user_agent = cfg_getstr(cfg_getsec(cfg, "general"), "user_agent");
@@ -813,7 +860,7 @@ open_input(struct decode_ctx *ctx, const char *path, struct evbuffer *evbuf)
       if (!ifmt)
 	{
 	  DPRINTF(E_LOG, L_XCODE, "Could not find input format: '%s'\n", ctx->settings.in_format);
-	  return -1;
+	  goto out_fail;
 	}
 
       CHECK_NULL(L_XCODE, ctx->avio = avio_input_evbuffer_open(evbuf));
@@ -832,7 +879,7 @@ open_input(struct decode_ctx *ctx, const char *path, struct evbuffer *evbuf)
   if (ret < 0)
     {
       DPRINTF(E_LOG, L_XCODE, "Cannot open '%s': %s\n", path, err2str(ret));
-      return -1;
+      goto out_fail;
     }
 
   ret = avformat_find_stream_info(ctx->ifmt_ctx, NULL);
@@ -850,8 +897,8 @@ open_input(struct decode_ctx *ctx, const char *path, struct evbuffer *evbuf)
 
   if (ctx->settings.encode_audio)
     {
-      dec_ctx = open_decoder(&stream_index, ctx, AVMEDIA_TYPE_AUDIO);
-      if (!dec_ctx)
+      ret = open_decoder(&dec_ctx, &stream_index, ctx, AVMEDIA_TYPE_AUDIO);
+      if (ret < 0)
 	goto out_fail;
 
       ctx->audio_stream.codec = dec_ctx;
@@ -860,8 +907,8 @@ open_input(struct decode_ctx *ctx, const char *path, struct evbuffer *evbuf)
 
   if (ctx->settings.encode_video)
     {
-      dec_ctx = open_decoder(&stream_index, ctx, AVMEDIA_TYPE_VIDEO);
-      if (!dec_ctx)
+      ret = open_decoder(&dec_ctx, &stream_index, ctx, AVMEDIA_TYPE_VIDEO);
+      if (ret < 0)
 	goto out_fail;
 
       ctx->video_stream.codec = dec_ctx;
@@ -876,7 +923,7 @@ open_input(struct decode_ctx *ctx, const char *path, struct evbuffer *evbuf)
   avcodec_free_context(&ctx->video_stream.codec);
   avformat_close_input(&ctx->ifmt_ctx);
 
-  return -1;
+  return (ret < 0 ? ret : -1); // If we got an error code from ffmpeg then return that
 }
 
 static void
@@ -1021,6 +1068,10 @@ open_filter(struct stream_ctx *out_stream, struct stream_ctx *in_stream)
 	}
 
       DPRINTF(E_DBG, L_XCODE, "Created 'in' filter: %s\n", args);
+
+      // For some AIFF files, ffmpeg (3.4.6) will not give us a channel_layout (bug in ffmpeg?)
+      if (!out_stream->codec->channel_layout)
+	out_stream->codec->channel_layout = av_get_default_channel_layout(out_stream->codec->channels);
 
       snprintf(args, sizeof(args),
                "sample_fmts=%s:sample_rates=%d:channel_layouts=0x%"PRIx64,
@@ -1177,6 +1228,7 @@ struct decode_ctx *
 transcode_decode_setup(enum transcode_profile profile, struct media_quality *quality, enum data_kind data_kind, const char *path, struct evbuffer *evbuf, uint32_t song_length)
 {
   struct decode_ctx *ctx;
+  int ret;
 
   CHECK_NULL(L_XCODE, ctx = calloc(1, sizeof(struct decode_ctx)));
   CHECK_NULL(L_XCODE, ctx->decoded_frame = av_frame_alloc());
@@ -1185,7 +1237,22 @@ transcode_decode_setup(enum transcode_profile profile, struct media_quality *qua
   ctx->duration = song_length;
   ctx->data_kind = data_kind;
 
-  if ((init_settings(&ctx->settings, profile, quality) < 0) || (open_input(ctx, path, evbuf) < 0))
+  ret = init_settings(&ctx->settings, profile, quality);
+  if (ret < 0)
+    goto fail_free;
+
+  if (data_kind == DATA_KIND_HTTP)
+    {
+      ret = open_input(ctx, path, evbuf, PROBE_TYPE_QUICK);
+
+      // Retry with a default, slower probe size
+      if (ret == AVERROR_STREAM_NOT_FOUND)
+	ret = open_input(ctx, path, evbuf, PROBE_TYPE_DEFAULT);
+    }
+  else
+    ret = open_input(ctx, path, evbuf, PROBE_TYPE_DEFAULT);
+
+  if (ret < 0)
     goto fail_free;
 
   return ctx;

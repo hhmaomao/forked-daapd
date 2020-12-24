@@ -96,7 +96,7 @@ parse_disc(struct media_file_info *mfi, char *disc_string)
 static int
 parse_date(struct media_file_info *mfi, char *date_string)
 {
-  char year_string[21];
+  char year_string[32];
   uint32_t *year = (uint32_t *) ((char *) mfi + mfi_offsetof(year));
   uint32_t *date_released = (uint32_t *) ((char *) mfi + mfi_offsetof(date_released));
   struct tm tm = { 0 };
@@ -171,7 +171,6 @@ static const struct metadata_map md_map_generic[] =
     { "MusicBrainz Release Group Id", 1, mfi_offsetof(songalbumid), parse_albumid },
     { "MusicBrainz DiscID",           1, mfi_offsetof(songalbumid), parse_albumid },
     { "CDDB DiscID",                  1, mfi_offsetof(songalbumid), parse_albumid },
-    { "iTunes_CDDB_IDs",              1, mfi_offsetof(songalbumid), parse_albumid },
     { "CATALOGNUMBER",                1, mfi_offsetof(songalbumid), parse_albumid },
     { "BARCODE",                      1, mfi_offsetof(songalbumid), parse_albumid },
 
@@ -393,7 +392,6 @@ scan_metadata_ffmpeg(struct media_file_info *mfi, const char *file)
 	return -1;
 
       av_dict_set(&options, "icy", "1", 0);
-      mfi->artwork = ARTWORK_HTTP;
     }
 
   ret = avformat_open_input(&ctx, path, NULL, &options);
